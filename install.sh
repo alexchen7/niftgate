@@ -5,6 +5,9 @@ PROJECT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" >/dev/null 2>&1 && pwd)
 INSTALL_DIR="/opt/nft-forward"
 EXIT_CONFIG_DIR="/etc/nft-forward-exit"
 RELAY_CONFIG_DIR="/etc/nft-forward"
+NIFTGATE_REF="${NIFTGATE_REF:-main}"
+NIFTGATE_ARCHIVE_URL="${NIFTGATE_ARCHIVE_URL:-https://github.com/alexchen7/niftgate/archive/refs/heads/${NIFTGATE_REF}.tar.gz}"
+BOOTSTRAP_TMP=""
 DRY_RUN=0
 MODE="full"
 
@@ -55,7 +58,41 @@ secret_ask() {
     printf '%s' "$value"
 }
 
+cleanup_bootstrap() {
+    if [[ -n "${BOOTSTRAP_TMP}" && -d "${BOOTSTRAP_TMP}" ]]; then
+        rm -rf "${BOOTSTRAP_TMP}"
+    fi
+}
+trap cleanup_bootstrap EXIT
+
+resolve_project_dir() {
+    if [[ -f "${PROJECT_DIR}/bin/nft.sh" && -d "${PROJECT_DIR}/nft_forward" ]]; then
+        return 0
+    fi
+
+    local archive extracted
+    BOOTSTRAP_TMP="$(mktemp -d /tmp/niftgate-install.XXXXXX)"
+    archive="${BOOTSTRAP_TMP}/niftgate.tgz"
+    echo "Full project files were not found next to install.sh; downloading NiftGate ${NIFTGATE_REF}..."
+    if command -v curl >/dev/null 2>&1; then
+        curl -fsSL "${NIFTGATE_ARCHIVE_URL}" -o "${archive}"
+    elif command -v wget >/dev/null 2>&1; then
+        wget -qO "${archive}" "${NIFTGATE_ARCHIVE_URL}"
+    else
+        echo "curl or wget is required to install from the one-line script." >&2
+        exit 1
+    fi
+    tar -xzf "${archive}" -C "${BOOTSTRAP_TMP}"
+    extracted="$(find "${BOOTSTRAP_TMP}" -mindepth 1 -maxdepth 1 -type d -name 'niftgate-*' | head -n 1)"
+    if [[ -z "${extracted}" || ! -f "${extracted}/bin/nft.sh" ]]; then
+        echo "Downloaded archive does not look like a NiftGate release." >&2
+        exit 1
+    fi
+    PROJECT_DIR="${extracted}"
+}
+
 install_common() {
+    resolve_project_dir
     if [[ ${EUID} -ne 0 && ${DRY_RUN} -eq 0 ]]; then
         echo "Please run as root." >&2
         exit 1
