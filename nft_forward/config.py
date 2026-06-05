@@ -8,9 +8,21 @@ from typing import Any
 
 from .constants import DEFAULT_TTL_DAYS, RESERVED_PORTS
 
+SECRET_PATH_PLACEHOLDERS = ("replace-with", "change-me", "example-")
+
 
 def project_dir() -> Path:
     return Path(os.environ.get("NFT_FORWARD_PROJECT_DIR", Path.cwd())).resolve()
+
+
+def clean_secret_path(value: Any) -> str:
+    path = str(value or "").strip().strip("/")
+    if not path:
+        return ""
+    lowered = path.lower()
+    if any(lowered.startswith(prefix) for prefix in SECRET_PATH_PLACEHOLDERS):
+        return ""
+    return path
 
 
 @dataclass
@@ -123,7 +135,7 @@ def load_settings(config_path: str | Path | None = None) -> Settings:
         phone_public_port=int(phone.get("public_port", 18443)),
         phone_public_host=phone.get("public_host", ""),
         phone_public_scheme=phone.get("public_scheme", "https"),
-        phone_secret_path=phone.get("secret_path", ""),
+        phone_secret_path=clean_secret_path(phone.get("secret_path", "")),
         geo_timeout=int(geo.get("timeout", 5)),
         geo_fallback_url=geo.get("fallback_url", "https://ipwho.is/{ip}"),
         ddns_timeout=int(data.get("ddns_timeout", 5)),
