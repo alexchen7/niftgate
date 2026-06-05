@@ -7,7 +7,7 @@ import unittest
 from pathlib import Path
 
 from nft_forward.config import Settings, clean_secret_path, default_paths, load_settings
-from nft_forward.cli import export_payload, migrate_secret_path
+from nft_forward.cli import export_payload, main as cli_main, migrate_secret_path
 from nft_forward.geo import GeoLookup
 from nft_forward.iputil import normalize_network, normalize_sources
 from nft_forward.nft import render_nft
@@ -121,6 +121,53 @@ class CoreTests(unittest.TestCase):
             self.assertEqual(cmd[:3], ["sshpass", "-f", str(password)])
             self.assertIn("BatchMode=no", cmd)
             self.assertEqual(cmd[-2:], ["nft.sh", "status"])
+
+    def test_pair_relay_updates_only_relay_settings(self) -> None:
+        with self.tempdir() as td:
+            cfg = Path(td) / "config.json"
+            cfg.write_text(
+                json.dumps(
+                    {
+                        "role": "exit",
+                        "paths": {"state_db": str(Path(td) / "state.db")},
+                        "ssh": {"relay_host": "old", "relay_user": "root", "relay_port": 22},
+                        "phone": {"public_host": "example.test", "public_port": 18443},
+                    }
+                ),
+                encoding="utf-8",
+            )
+            password_file = Path(td) / "relay_password"
+            self.assertEqual(
+                cli_main(
+                    [
+                        "--config",
+                        str(cfg),
+                        "pair-relay",
+                        "--host",
+                        "10.0.0.2",
+                        "--user",
+                        "admin",
+                        "--port",
+                        "2222",
+                        "--auth-method",
+                        "password",
+                        "--password-file",
+                        str(password_file),
+                        "--timeout",
+                        "9",
+                        "--no-restart",
+                    ]
+                ),
+                0,
+            )
+            data = json.loads(cfg.read_text(encoding="utf-8"))
+            self.assertEqual(data["ssh"]["relay_host"], "10.0.0.2")
+            self.assertEqual(data["ssh"]["relay_user"], "admin")
+            self.assertEqual(data["ssh"]["relay_port"], 2222)
+            self.assertEqual(data["ssh"]["relay_auth_method"], "password")
+            self.assertEqual(data["ssh"]["relay_password_file"], str(password_file))
+            self.assertEqual(data["ssh"]["timeout"], 9)
+            self.assertEqual(data["phone"]["public_host"], "example.test")
 
 
 if __name__ == "__main__":
