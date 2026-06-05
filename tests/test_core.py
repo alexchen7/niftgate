@@ -1,12 +1,13 @@
 from __future__ import annotations
 
 import os
+import json
 import tempfile
 import unittest
 from pathlib import Path
 
-from nft_forward.config import Settings, default_paths
-from nft_forward.cli import export_payload
+from nft_forward.config import Settings, clean_secret_path, default_paths, load_settings
+from nft_forward.cli import export_payload, migrate_secret_path
 from nft_forward.geo import GeoLookup
 from nft_forward.iputil import normalize_network, normalize_sources
 from nft_forward.nft import render_nft
@@ -85,6 +86,23 @@ class CoreTests(unittest.TestCase):
             self.assertEqual(private_payload["secret_urls"][0]["secret_path"], "super-secret")
             self.assertEqual(state.delete_secret_urls([1]), 1)
             self.assertIsNone(state.secret_url_by_path("super-secret"))
+            state.close()
+
+    def test_placeholder_secret_path_is_not_migrated(self) -> None:
+        with self.tempdir() as td:
+            paths = default_paths(Path(td))
+            paths.state_db = Path(td) / "state.db"
+            cfg = Path(td) / "config.json"
+            cfg.write_text(
+                json.dumps({"paths": {"state_db": str(paths.state_db)}, "phone": {"secret_path": "replace-with-long-random-secret"}}),
+                encoding="utf-8",
+            )
+            settings = load_settings(cfg)
+            state = State(paths.state_db)
+            self.assertEqual(clean_secret_path("replace-with-long-random-secret"), "")
+            self.assertEqual(settings.phone_secret_path, "")
+            migrate_secret_path(settings, state)
+            self.assertEqual(state.secret_urls(), [])
             state.close()
 
     def test_ssh_command_builder_supports_password_file(self) -> None:
