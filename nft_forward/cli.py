@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import argparse
+import getpass
 import json
 import os
 import secrets
+import subprocess
 import sys
 from pathlib import Path
 from typing import Any
@@ -20,8 +22,16 @@ from .nft import render_nft, write_and_apply
 from .phone_server import run as run_phone
 from .relay import ingest_source, state_for, status, sync_ddns
 from .sshlog import run as run_sshlog
+from .sshutil import ssh_command
 from .state import State
 from .telegram_bot import run as run_telegram
+
+EXIT_CONFIG_PATH = Path("/etc/nft-forward-exit/config.json")
+EXIT_SERVICES = [
+    "nft-forward-exit-phone.service",
+    "nft-forward-exit-queue.service",
+    "nft-forward-exit-telegram.service",
+]
 
 
 def print_json(data: object) -> None:
@@ -45,6 +55,44 @@ def write_config_json(settings, data: dict[str, Any]) -> None:
         os.chmod(cfg, 0o600)
     except OSError:
         pass
+
+
+def load_exit_settings(args: argparse.Namespace):
+    config = args.config or os.environ.get("NFT_FORWARD_CONFIG")
+    if not config and EXIT_CONFIG_PATH.exists():
+        config = str(EXIT_CONFIG_PATH)
+    return load_settings(config)
+
+
+def relay_pairing_summary(data: dict[str, Any]) -> dict[str, Any]:
+    ssh = data.get("ssh", {})
+    password_file = ssh.get("relay_password_file", "")
+    return {
+        "relay_host": ssh.get("relay_host", ""),
+        "relay_user": ssh.get("relay_user", "root"),
+        "relay_port": ssh.get("relay_port", 22),
+        "relay_auth_method": ssh.get("relay_auth_method", "key"),
+        "relay_key": ssh.get("relay_key", ""),
+        "relay_password_file": password_file,
+        "relay_password_file_exists": bool(password_file and Path(password_file).exists()),
+        "ssh_timeout": ssh.get("timeout", 8),
+    }
+
+
+def restart_exit_services() -> str:
+    try:
+        proc = subprocess.run(
+            ["systemctl", "try-restart", *EXIT_SERVICES],
+            text=True,
+            capture_output=True,
+            timeout=20,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        return f"service restart skipped: {exc}"
+    if proc.returncode == 0:
+        return "active exit services restarted"
+    detail = (proc.stderr or proc.stdout).strip()
+    return f"service restart warning: {detail or proc.returncode}"
 
 
 def secret_url_dict(url, include_secrets: bool = True, settings=None) -> dict[str, Any]:
@@ -462,8 +510,93 @@ def cmd_pair_exit(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_pair_relay(args: argparse.Namespace) -> int:
+    settings = load_exit_settings(args)
+    data = read_config_json(settings)
+    ssh = data.setdefault("ssh", {})
+
+    changed = False
+    if args.host:
+        ssh["relay_host"] = args.host
+        changed = True
+    if args.user:
+        ssh["relay_user"] = args.user
+        changed = True
+    if args.port:
+        ssh["relay_port"] = args.port
+        changed = True
+    if args.timeout:
+        ssh["timeout"] = args.timeout
+        changed = True
+    if args.key:
+        ssh["relay_key"] = args.key
+        if not args.auth_method:
+            ssh["relay_auth_method"] = "key"
+        changed = True
+    if args.password_file:
+        ssh["relay_password_file"] = args.password_file
+        if not args.auth_method:
+            ssh["relay_auth_method"] = "password"
+        changed = True
+    if args.ask_password:
+        cfg = settings.paths.config_file if settings.paths else EXIT_CONFIG_PATH
+        password_file = Path(args.password_file or ssh.get("relay_password_file") or cfg.parent / "ssh" / "relay_password")
+        password = getpass.getpass("Relay SSH password: ")
+        password_file.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            os.chmod(password_file.parent, 0o700)
+        except OSError:
+            pass
+        password_file.write_text(password + "\n", encoding="utf-8")
+        os.chmod(password_file, 0o600)
+        ssh["relay_password_file"] = str(password_file)
+        if not args.auth_method:
+            ssh["relay_auth_method"] = "password"
+        changed = True
+    if args.clear_password:
+        old_password_file = ssh.get("relay_password_file", "")
+        if old_password_file:
+            try:
+                Path(old_password_file).unlink()
+            except FileNotFoundError:
+                pass
+        ssh["relay_password_file"] = ""
+        changed = True
+    if args.auth_method:
+        ssh["relay_auth_method"] = args.auth_method
+        changed = True
+
+    if changed:
+        write_config_json(settings, data)
+        print("relay pairing updated")
+
+    if args.test:
+        refreshed = load_exit_settings(args)
+        result = ssh_command(
+            refreshed.relay_host,
+            refreshed.relay_user,
+            refreshed.relay_port,
+            refreshed.relay_key,
+            ["true"],
+            timeout=refreshed.ssh_timeout,
+            auth_method=refreshed.relay_auth_method,
+            password_file=refreshed.relay_password_file,
+        )
+        if result.ok:
+            print(f"relay ssh ok: {result.latency_ms} ms")
+        else:
+            detail = (result.stderr or result.stdout or str(result.returncode)).strip()
+            print(f"relay ssh failed: {detail}")
+
+    if changed and not args.no_restart:
+        print(restart_exit_services())
+
+    print_json(relay_pairing_summary(data))
+    return 0
+
+
 def cmd_sync_from_relay(args: argparse.Namespace) -> int:
-    ok, out = sync_from_relay(load_settings(args.config))
+    ok, out = sync_from_relay(load_exit_settings(args))
     print(out)
     return 0 if ok else 1
 
@@ -665,6 +798,20 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--public-port", type=int)
     p.add_argument("--public-scheme", choices=["http", "https"])
     p.set_defaults(func=cmd_pair_exit)
+
+    p = sub.add_parser("pair-relay", help="update the relay SSH pairing from an exit node")
+    p.add_argument("--host", help="relay intranet IP/host reachable from this exit node")
+    p.add_argument("--user", help="relay SSH user")
+    p.add_argument("--port", type=int, help="relay SSH port")
+    p.add_argument("--auth-method", choices=["key", "password"], help="relay SSH auth method")
+    p.add_argument("--key", help="relay SSH private key path")
+    p.add_argument("--password-file", help="root-readable file containing the relay SSH password")
+    p.add_argument("--ask-password", action="store_true", help="prompt and save relay SSH password to the configured password file")
+    p.add_argument("--clear-password", action="store_true", help="remove the saved relay password file and clear it from config")
+    p.add_argument("--timeout", type=int, help="relay SSH connection timeout in seconds")
+    p.add_argument("--test", action="store_true", help="test SSH connectivity after updating")
+    p.add_argument("--no-restart", action="store_true", help="do not try-restart active exit services after updating")
+    p.set_defaults(func=cmd_pair_relay)
 
     p = sub.add_parser("sync-from-relay")
     p.set_defaults(func=cmd_sync_from_relay)
