@@ -4,6 +4,7 @@ import argparse
 import getpass
 import json
 import os
+import re
 import secrets
 import subprocess
 import sys
@@ -55,6 +56,53 @@ def write_config_json(settings, data: dict[str, Any]) -> None:
         os.chmod(cfg, 0o600)
     except OSError:
         pass
+
+
+DDNS_HOST_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,252}$")
+
+
+def clean_ddns_host(host: str) -> str:
+    value = str(host or "").strip().strip(".").lower()
+    if not value or "://" in value or "/" in value or not DDNS_HOST_RE.match(value):
+        raise ValueError("DDNS host must be a hostname, not a URL")
+    if any(part in {"", "-"} or part.startswith("-") or part.endswith("-") for part in value.split(".")):
+        raise ValueError("DDNS host contains an invalid label")
+    return value
+
+
+def ddns_entries(data: dict[str, Any]) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for item in data.get("ddns", []):
+        if isinstance(item, str):
+            host = item
+            ruleset = DEFAULT_RULESET
+            enabled = True
+        elif isinstance(item, dict):
+            host = item.get("host", "")
+            ruleset = item.get("ruleset") or DEFAULT_RULESET
+            enabled = bool(item.get("enabled", True))
+        else:
+            continue
+        try:
+            clean_host = clean_ddns_host(host)
+        except ValueError:
+            continue
+        rows.append(
+            {
+                "id": len(rows) + 1,
+                "host": clean_host,
+                "ruleset": str(ruleset or DEFAULT_RULESET),
+                "enabled": enabled,
+            }
+        )
+    return rows
+
+
+def set_ddns_entries(data: dict[str, Any], rows: list[dict[str, Any]]) -> None:
+    data["ddns"] = [
+        {"host": row["host"], "ruleset": row.get("ruleset") or DEFAULT_RULESET, "enabled": bool(row.get("enabled", True))}
+        for row in rows
+    ]
 
 
 def load_exit_settings(args: argparse.Namespace):
@@ -318,6 +366,64 @@ def cmd_sync_ddns(args: argparse.Namespace) -> int:
     count = sync_ddns(load_settings(args.config), apply_rules=args.apply)
     print(f"ddns entries updated: {count}")
     return 0
+
+
+def cmd_ddns(args: argparse.Namespace) -> int:
+    settings = load_settings(args.config)
+    data = read_config_json(settings)
+    rows = ddns_entries(data)
+    if args.ddns_action == "list":
+        print_json(rows)
+        return 0
+
+    if args.ddns_action == "add":
+        host = clean_ddns_host(args.host)
+        ruleset = args.ruleset or DEFAULT_RULESET
+        for row in rows:
+            if row["host"] == host and row["ruleset"] == ruleset:
+                row["enabled"] = True
+                set_ddns_entries(data, rows)
+                write_config_json(settings, data)
+                print_json(row)
+                return 0
+        row = {"id": len(rows) + 1, "host": host, "ruleset": ruleset, "enabled": True}
+        rows.append(row)
+        set_ddns_entries(data, rows)
+        write_config_json(settings, data)
+        print_json(row)
+        return 0
+
+    if args.ddns_action == "delete":
+        ids: set[int] = set()
+        hosts: set[str] = set()
+        for token in args.items:
+            if token.isdigit():
+                ids.add(int(token))
+            else:
+                hosts.add(clean_ddns_host(token))
+        removed_pairs: list[tuple[str, str]] = []
+        kept: list[dict[str, Any]] = []
+        for row in rows:
+            selected = row["id"] in ids or row["host"] in hosts
+            if selected:
+                removed_pairs.append((row["host"], row["ruleset"]))
+            else:
+                kept.append({**row, "id": len(kept) + 1})
+        set_ddns_entries(data, kept)
+        write_config_json(settings, data)
+        removed_allow = 0
+        if removed_pairs and not args.keep_allowlist:
+            state = state_for(settings)
+            try:
+                removed_allow = state.remove_ddns_allow_entries(removed_pairs)
+                if removed_allow and args.apply:
+                    write_and_apply(settings, state, apply=True)
+            finally:
+                state.close()
+        print_json({"deleted": len(removed_pairs), "removed_allow_entries": removed_allow})
+        return 0
+
+    raise SystemExit("unknown ddns action")
 
 
 def cmd_blocked(args: argparse.Namespace) -> int:
@@ -735,6 +841,20 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("sync-ddns")
     p.add_argument("--no-apply", dest="apply", action="store_false", default=True)
     p.set_defaults(func=cmd_sync_ddns)
+
+    p = sub.add_parser("ddns")
+    ddns = p.add_subparsers(dest="ddns_action", required=True)
+    q = ddns.add_parser("list")
+    q.set_defaults(func=cmd_ddns)
+    q = ddns.add_parser("add")
+    q.add_argument("host")
+    q.add_argument("--ruleset", default=DEFAULT_RULESET)
+    q.set_defaults(func=cmd_ddns)
+    q = ddns.add_parser("delete")
+    q.add_argument("items", nargs="+", help="1-based DDNS ids or hostnames")
+    q.add_argument("--keep-allowlist", action="store_true", help="do not remove whitelist entries created by these DDNS records")
+    q.add_argument("--no-apply", dest="apply", action="store_false", default=True)
+    q.set_defaults(func=cmd_ddns)
 
     p = sub.add_parser("blocked")
     p.add_argument("--limit", type=int, default=50)

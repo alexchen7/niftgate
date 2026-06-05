@@ -169,6 +169,32 @@ class CoreTests(unittest.TestCase):
             self.assertEqual(data["ssh"]["timeout"], 9)
             self.assertEqual(data["phone"]["public_host"], "example.test")
 
+    def test_ddns_cli_add_delete_cleans_ddns_allow_entries(self) -> None:
+        with self.tempdir() as td:
+            cfg = Path(td) / "config.json"
+            state_db = Path(td) / "state.db"
+            cfg.write_text(
+                json.dumps({"paths": {"state_db": str(state_db)}, "ddns": []}),
+                encoding="utf-8",
+            )
+            self.assertEqual(
+                cli_main(["--config", str(cfg), "ddns", "add", "mobile.example.com", "--ruleset", "public"]),
+                0,
+            )
+            data = json.loads(cfg.read_text(encoding="utf-8"))
+            self.assertEqual(data["ddns"], [{"host": "mobile.example.com", "ruleset": "public", "enabled": True}])
+
+            state = State(state_db)
+            state.add_allow("public", "198.51.100.0/24", "ddns", 24, note="DDNS mobile.example.com")
+            state.close()
+
+            self.assertEqual(cli_main(["--config", str(cfg), "ddns", "delete", "1", "--no-apply"]), 0)
+            data = json.loads(cfg.read_text(encoding="utf-8"))
+            self.assertEqual(data["ddns"], [])
+            state = State(state_db)
+            self.assertEqual(state.all_allow_entries(), [])
+            state.close()
+
 
 if __name__ == "__main__":
     unittest.main()

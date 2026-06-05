@@ -63,10 +63,20 @@ def sync_ddns(settings: Settings, apply_rules: bool = True) -> int:
     entries = data.get("ddns", [])
     changed = 0
     for item in entries:
-        host = item.get("host")
+        if isinstance(item, str):
+            host = item
+            ruleset = DEFAULT_RULESET
+            enabled = True
+        elif isinstance(item, dict):
+            host = item.get("host")
+            ruleset = item.get("ruleset", DEFAULT_RULESET)
+            enabled = bool(item.get("enabled", True))
+        else:
+            continue
         if not host:
             continue
-        ruleset = item.get("ruleset", DEFAULT_RULESET)
+        if not enabled:
+            continue
         old_timeout = socket.getdefaulttimeout()
         socket.setdefaulttimeout(settings.ddns_timeout)
         try:

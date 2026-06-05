@@ -182,6 +182,7 @@ def write_example_config(path: Path) -> None:
             "secret_path": "replace-with-long-random-path",
         },
         "geo": {"timeout": 5, "fallback_url": "https://ipwho.is/{ip}"},
+        "ddns_timeout": 5,
         "ddns": [],
     }
     path.write_text(json.dumps(example, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")

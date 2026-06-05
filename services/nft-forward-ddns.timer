@@ -2,9 +2,9 @@
 Description=Run nft-forward DDNS whitelist sync periodically
 
 [Timer]
-OnBootSec=2min
-OnUnitActiveSec=5min
-AccuracySec=30s
+OnBootSec=10s
+OnUnitActiveSec=10s
+AccuracySec=1s
 Persistent=true
 
 [Install]

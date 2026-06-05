@@ -96,6 +96,7 @@ def manage_keyboard() -> dict[str, Any]:
             [("Remove Forwarding Rule", "manage:remove_rule")],
             [("Change Rule Sets", "manage:change_rulesets")],
             [("Secret URL", "manage:secret_url")],
+            [("DDNS", "manage:ddns")],
             [("Back", "menu:main")],
         ]
     )
@@ -107,6 +108,18 @@ def secret_url_keyboard() -> dict[str, Any]:
             [("View Active URLs", "secret:list")],
             [("Generate URL", "secret:generate")],
             [("Delete URLs", "secret:delete")],
+            [("Back", "menu:manage")],
+        ]
+    )
+
+
+def ddns_keyboard() -> dict[str, Any]:
+    return keyboard(
+        [
+            [("View Records", "ddns:list")],
+            [("Add Record", "ddns:add")],
+            [("Delete Records", "ddns:delete")],
+            [("Refresh Now", "ddns:refresh")],
             [("Back", "menu:manage")],
         ]
     )
@@ -203,6 +216,11 @@ def format_secret_url(settings: Settings, row: dict[str, Any]) -> str:
         f"  hits: {row.get('hit_count', 0)}; created: {short_time(row.get('created_at'))}; last used: {short_time(row.get('last_used_at'))}\n"
         f"  {public_secret_url(settings, row)}"
     )
+
+
+def format_ddns(row: dict[str, Any]) -> str:
+    status = "enabled" if row.get("enabled", True) else "disabled"
+    return f"#{row.get('id')} {row.get('host')} -> {row.get('ruleset', 'public')} ({status})"
 
 
 def status_counts(settings: Settings) -> tuple[dict[str, int], str]:
@@ -339,6 +357,48 @@ def render_secret_delete(settings: Settings, chat_id: int) -> tuple[str, dict[st
     return "Delete Secret URLs\nSelect one or more URLs, then delete selected.", keyboard(button_rows)
 
 
+def render_ddns_menu() -> tuple[str, dict[str, Any]]:
+    return "DDNS\nChoose an action. Relay refresh runs every 10 seconds.", ddns_keyboard()
+
+
+def render_ddns_list(settings: Settings) -> tuple[str, dict[str, Any]]:
+    ok, rows, out = relay_json(settings, ["ddns", "list"], [])
+    if not ok:
+        return f"DDNS\nrelay error: {out}", ddns_keyboard()
+    body = "\n".join(format_ddns(row) for row in rows) or "No DDNS records."
+    return f"DDNS Records ({len(rows)})\n\n{body}", ddns_keyboard()
+
+
+def render_ddns_add(settings: Settings) -> tuple[str, dict[str, Any]]:
+    rows = [[(name, f"ddns:add_ruleset:{name}")] for name in ruleset_names(settings)[:20]]
+    rows.append([("Back", "manage:ddns")])
+    return "Add DDNS Record\nChoose the target ruleset.", keyboard(rows)
+
+
+def render_ddns_delete(settings: Settings, chat_id: int) -> tuple[str, dict[str, Any]]:
+    ok, rows, out = relay_json(settings, ["ddns", "list"], [])
+    if not ok:
+        return f"Delete DDNS Records\nrelay error: {out}", ddns_keyboard()
+    selected = set()
+    pending = PENDING_ACTIONS.get(chat_id)
+    if pending and pending.get("action") == "ddns_delete":
+        selected = {int(x) for x in pending.get("selected", "").split(",") if x}
+    PENDING_ACTIONS[chat_id] = {"action": "ddns_delete", "selected": ",".join(str(x) for x in sorted(selected))}
+    button_rows: list[list[tuple[str, str]]] = []
+    for row in rows[:20]:
+        rid = int(row["id"])
+        mark = "[x]" if rid in selected else "[ ]"
+        button_rows.append([(f"{mark} #{rid} {one_line(row.get('host'), 'host')}", f"ddns:toggle:{rid}")])
+    button_rows.append([("Delete Records Only", "ddns:delete_keep_allowlist")])
+    button_rows.append([("Delete + Whitelist", "ddns:delete_with_allowlist"), ("Clear", "ddns:clear_delete")])
+    button_rows.append([("Back", "manage:ddns")])
+    return (
+        "Delete DDNS Records\n"
+        "Select one or more records, then choose whether to keep or remove the whitelist entries created by them.",
+        keyboard(button_rows),
+    )
+
+
 def render_attack(settings: Settings) -> tuple[str, dict[str, Any]]:
     ok, out = relay_text(settings, ["mode"])
     mode = out.strip() if ok else "unknown"
@@ -455,6 +515,16 @@ def handle_pending(settings: Settings, chat_id: int, text: str) -> tuple[str, di
             args += ["--open"]
         ok, out = relay_text(settings, args)
         return (out if ok else f"relay error: {out}"), manage_keyboard()
+    if action == "ddns_add":
+        if len(parts) != 1:
+            return "Add DDNS Record\nSend only the hostname, for example:\nmobile.wl.example.com", ddns_keyboard()
+        ruleset = pending.get("ruleset") or "public"
+        ok, out = relay_text(settings, ["ddns", "add", parts[0], "--ruleset", ruleset])
+        if not ok:
+            return f"DDNS\nrelay error: {out}", ddns_keyboard()
+        refresh_ok, refresh_out = relay_text(settings, ["sync-ddns"])
+        suffix = f"\n\nRefresh: {refresh_out}" if refresh_ok else f"\n\nRefresh failed: {refresh_out}"
+        return f"DDNS record added\n{out}{suffix}", ddns_keyboard()
     return "Unknown pending action.", manage_keyboard()
 
 
@@ -527,6 +597,9 @@ def handle_callback_for_chat(settings: Settings, chat_id: int, data: str) -> tup
     if data == "manage:secret_url":
         PENDING_ACTIONS.pop(chat_id, None)
         return render_secret_url_menu()
+    if data == "manage:ddns":
+        PENDING_ACTIONS.pop(chat_id, None)
+        return render_ddns_menu()
     if data == "secret:list":
         PENDING_ACTIONS.pop(chat_id, None)
         return render_secret_url_list(settings)
@@ -568,6 +641,46 @@ def handle_callback_for_chat(settings: Settings, chat_id: int, data: str) -> tup
         PENDING_ACTIONS.pop(chat_id, None)
         sync_from_relay(settings)
         return (out if ok else f"relay error: {out}"), secret_url_keyboard()
+    if data == "ddns:list":
+        PENDING_ACTIONS.pop(chat_id, None)
+        return render_ddns_list(settings)
+    if data == "ddns:add":
+        PENDING_ACTIONS.pop(chat_id, None)
+        return render_ddns_add(settings)
+    if data.startswith("ddns:add_ruleset:"):
+        ruleset = data.split(":", 2)[2]
+        PENDING_ACTIONS[chat_id] = {"action": "ddns_add", "ruleset": ruleset}
+        return f"Add DDNS Record\nRuleset: {ruleset}\n\nSend the DDNS hostname.", ddns_keyboard()
+    if data == "ddns:delete":
+        return render_ddns_delete(settings, chat_id)
+    if data.startswith("ddns:toggle:"):
+        rid = int(data.rsplit(":", 1)[1])
+        pending = PENDING_ACTIONS.get(chat_id, {"action": "ddns_delete", "selected": ""})
+        selected = {int(x) for x in pending.get("selected", "").split(",") if x}
+        if rid in selected:
+            selected.remove(rid)
+        else:
+            selected.add(rid)
+        PENDING_ACTIONS[chat_id] = {"action": "ddns_delete", "selected": ",".join(str(x) for x in sorted(selected))}
+        return render_ddns_delete(settings, chat_id)
+    if data == "ddns:clear_delete":
+        PENDING_ACTIONS[chat_id] = {"action": "ddns_delete", "selected": ""}
+        return render_ddns_delete(settings, chat_id)
+    if data in {"ddns:delete_selected", "ddns:delete_with_allowlist", "ddns:delete_keep_allowlist"}:
+        pending = PENDING_ACTIONS.get(chat_id, {"selected": ""})
+        ids = [x for x in pending.get("selected", "").split(",") if x]
+        if not ids:
+            return "Delete DDNS Records\nNo records selected.", ddns_keyboard()
+        args = ["ddns", "delete"] + ids
+        if data == "ddns:delete_keep_allowlist":
+            args.append("--keep-allowlist")
+        ok, out = relay_text(settings, args)
+        PENDING_ACTIONS.pop(chat_id, None)
+        return (out if ok else f"relay error: {out}"), ddns_keyboard()
+    if data == "ddns:refresh":
+        PENDING_ACTIONS.pop(chat_id, None)
+        ok, out = relay_text(settings, ["sync-ddns"])
+        return (f"DDNS Refresh\n{out}" if ok else f"DDNS Refresh\nrelay error: {out}"), ddns_keyboard()
     if data.startswith("manage:"):
         action = data.split(":", 1)[1]
         return set_pending(chat_id, action), manage_keyboard()

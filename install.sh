@@ -13,10 +13,13 @@ MODE="full"
 
 usage() {
     cat <<'EOF'
-Usage: bash install.sh [--dry-run] [--exit-only|--relay-only|--uninstall]
+Usage: bash install.sh [--dry-run] [--exit-only|--relay-only|--upgrade|--uninstall]
 
 Default: run on the exit node, install exit services, then install the relay
 over SSH using the relay intranet address.
+
+Use --upgrade on an already configured exit node to refresh NiftGate without
+re-entering domain, relay, DDNS, Telegram, or certificate settings.
 EOF
 }
 
@@ -25,6 +28,7 @@ while (($#)); do
         --dry-run) DRY_RUN=1 ;;
         --exit-only) MODE="exit-only" ;;
         --relay-only) MODE="relay-only" ;;
+        --upgrade) MODE="upgrade" ;;
         --uninstall) MODE="uninstall" ;;
         -h|--help) usage; exit 0 ;;
         *) echo "unknown option: $1" >&2; usage; exit 2 ;;
@@ -290,6 +294,34 @@ PY
     fi
 }
 
+upgrade_existing() {
+    install_common
+    if [[ ! -f "${EXIT_CONFIG_DIR}/config.json" ]]; then
+        echo "No existing ${EXIT_CONFIG_DIR}/config.json found. Run the normal installer first." >&2
+        exit 1
+    fi
+    run env NFT_FORWARD_CONFIG="${EXIT_CONFIG_DIR}/config.json" /usr/local/bin/nft.sh init-db
+    run install -m 0644 "${INSTALL_DIR}/services/nft-forward-exit-phone.service" /etc/systemd/system/
+    run install -m 0644 "${INSTALL_DIR}/services/nft-forward-exit-queue.service" /etc/systemd/system/
+    run install -m 0644 "${INSTALL_DIR}/services/nft-forward-exit-telegram.service" /etc/systemd/system/
+    run systemctl daemon-reload
+    run systemctl enable --now nft-forward-exit-phone.service
+    run systemctl enable --now nft-forward-exit-queue.service
+    if ((DRY_RUN)); then
+        echo "[dry-run] enable Telegram only if token is configured"
+    elif python3 - <<PY
+import json
+data=json.load(open('${EXIT_CONFIG_DIR}/config.json'))
+raise SystemExit(0 if data.get('telegram',{}).get('token') else 1)
+PY
+    then
+        run systemctl enable --now nft-forward-exit-telegram.service
+    else
+        run systemctl disable --now nft-forward-exit-telegram.service || true
+    fi
+    install_relay_remote
+}
+
 ssh_prefix() {
     local host="$1" user="$2" port="$3" auth="$4" key="$5" passfile="$6"
     if [[ "$auth" == "password" ]]; then
@@ -362,6 +394,9 @@ case "$MODE" in
     relay-only)
         install_common
         run bash "${INSTALL_DIR}/scripts/init_relay.sh"
+        ;;
+    upgrade)
+        upgrade_existing
         ;;
     uninstall)
         uninstall_local

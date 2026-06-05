@@ -114,6 +114,25 @@ class TelegramBotTests(unittest.TestCase):
                         "hit_count": 0,
                     }
                 )
+            if args == ["ddns", "list"]:
+                return True, json.dumps(
+                    [
+                        {
+                            "id": 1,
+                            "host": "mobile.example.com",
+                            "ruleset": "public",
+                            "enabled": True,
+                        }
+                    ]
+                )
+            if args[:2] == ["ddns", "add"]:
+                return True, json.dumps({"id": 2, "host": args[2], "ruleset": args[-1], "enabled": True})
+            if args[:2] == ["ddns", "delete"]:
+                ids = [x for x in args[2:] if not x.startswith("--")]
+                removed = 0 if "--keep-allowlist" in args else 1
+                return True, json.dumps({"deleted": len(ids), "removed_allow_entries": removed})
+            if args == ["sync-ddns"]:
+                return True, "ddns entries updated: 1"
             if args and args[0] == "add-rule":
                 return True, "rule upserted"
             return False, "unexpected command"
@@ -168,6 +187,29 @@ class TelegramBotTests(unittest.TestCase):
             self.assertIn("secret-path", text)
             text, _markup = telegram_bot.handle_callback_for_chat(settings(), 123, "secret:create:public")
             self.assertIn("new-secret", text)
+
+    def test_ddns_menu_lists_adds_and_deletes(self) -> None:
+        calls: list[list[str]] = []
+        with patch.object(telegram_bot, "relay_args", self.fake_relay(calls)):
+            text, _markup = telegram_bot.handle_callback_for_chat(settings(), 123, "ddns:list")
+            self.assertIn("mobile.example.com", text)
+            text, _markup = telegram_bot.handle_callback_for_chat(settings(), 123, "ddns:add_ruleset:public")
+            self.assertIn("Send the DDNS hostname", text)
+            text, _markup = telegram_bot.handle_message(settings(), 123, "home.example.com")
+            self.assertIn("DDNS record added", text)
+            text, _markup = telegram_bot.handle_callback_for_chat(settings(), 123, "ddns:delete")
+            self.assertIn("mobile.example.com", str(_markup))
+            telegram_bot.handle_callback_for_chat(settings(), 123, "ddns:toggle:1")
+            text, _markup = telegram_bot.handle_callback_for_chat(settings(), 123, "ddns:delete_keep_allowlist")
+            self.assertIn('"deleted": 1', text)
+            self.assertIn('"removed_allow_entries": 0', text)
+            telegram_bot.handle_callback_for_chat(settings(), 123, "ddns:delete")
+            telegram_bot.handle_callback_for_chat(settings(), 123, "ddns:toggle:1")
+            text, _markup = telegram_bot.handle_callback_for_chat(settings(), 123, "ddns:delete_with_allowlist")
+            self.assertIn('"removed_allow_entries": 1', text)
+        self.assertIn(["ddns", "add", "home.example.com", "--ruleset", "public"], calls)
+        self.assertIn(["ddns", "delete", "1", "--keep-allowlist"], calls)
+        self.assertIn(["ddns", "delete", "1"], calls)
 
 
 if __name__ == "__main__":

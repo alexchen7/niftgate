@@ -322,6 +322,20 @@ class State:
             self.audit("allow_removed", id=entry_id)
         return deleted
 
+    def remove_ddns_allow_entries(self, pairs: list[tuple[str, str]]) -> int:
+        removed = 0
+        for host, ruleset in pairs:
+            note = f"DDNS {host}"
+            cur = self.conn.execute(
+                "DELETE FROM allow_entries WHERE channel='ddns' AND note=? AND ruleset=?",
+                (note, ruleset),
+            )
+            removed += cur.rowcount
+        self.conn.commit()
+        if removed:
+            self.audit("ddns_allow_removed", count=removed, pairs=pairs)
+        return removed
+
     def active_allow_entries(self) -> list[AllowEntry]:
         now = utc_now()
         rows = self.conn.execute(

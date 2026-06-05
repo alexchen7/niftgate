@@ -74,6 +74,17 @@ The installer asks for:
 Telegram is optional. If token/ChatID are left blank, the core services still
 install and Telegram stays disabled.
 
+## Upgrade
+
+On an already configured exit node, upgrade without re-entering the setup:
+
+```bash
+bash <(curl -Ls https://raw.githubusercontent.com/alexchen7/niftgate/main/install.sh) --upgrade
+```
+
+Upgrade preserves the exit-node config, then refreshes the relay side using the
+saved relay SSH pairing.
+
 ## Terminal Menu
 
 After installation:
@@ -111,6 +122,20 @@ Sync DDNS entries:
 ```bash
 nft.sh sync-ddns
 ```
+
+Manage DDNS records on the relay:
+
+```bash
+nft.sh ddns list
+nft.sh ddns add mobile.wl.example.com --ruleset public
+nft.sh ddns delete 1
+nft.sh ddns delete 1 --keep-allowlist
+```
+
+The relay DDNS timer refreshes records every 10 seconds. When deleting a DDNS
+record, you can remove the whitelist entries created by that record or keep them
+with `--keep-allowlist`. The Telegram DDNS delete menu provides both choices as
+buttons.
 
 Switch modes:
 
@@ -176,7 +201,7 @@ Telegram is optional and runs on the exit node. The bot provides clickable
 buttons:
 
 - `Status`: counts plus relay SSH latency/timeout.
-- `Manage`: forwarding rules, rulesets, and Secret URLs.
+- `Manage`: forwarding rules, rulesets, Secret URLs, and DDNS records.
 - `Log`: recent whitelist and blocked-source entries.
 - `Attack Mode`: regular/attack toggle.
 

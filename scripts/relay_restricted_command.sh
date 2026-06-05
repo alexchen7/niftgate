@@ -7,7 +7,7 @@ case "${orig}" in
     nft.sh\ mode\ *|nft.sh\ ingest\ *|nft.sh\ allow\ *|\
     nft.sh\ remove-allow\ *|nft.sh\ blocked*|nft.sh\ promote-block\ *|\
     nft.sh\ delete-block\ *|nft.sh\ add-rule\ *|nft.sh\ delete-rule\ *|\
-    nft.sh\ secret-url\ *|nft.sh\ export*|nft.sh\ import\ *|nft.sh\ pair-exit\ *)
+    nft.sh\ secret-url\ *|nft.sh\ ddns\ *|nft.sh\ export*|nft.sh\ import\ *|nft.sh\ pair-exit\ *)
         # shellcheck disable=SC2086
         exec /usr/local/bin/${orig}
         ;;
