@@ -1,0 +1,46 @@
+from __future__ import annotations
+
+import re
+from pathlib import Path
+
+from .iputil import normalize_sources
+from .state import State
+
+NOTE_RE = re.compile(r"^\s*#\s*备注:\s*(.*)$")
+SRC_RE = re.compile(r"^\s*#\s*允许来源:\s*(.*)$")
+TCP_RE = re.compile(r"tcp\s+dport\s+([0-9]+)\s+dnat\s+to\s+([0-9.]+):([0-9]+)")
+
+
+def import_legacy_conf(path: Path, state: State) -> int:
+    if not path.exists():
+        return 0
+    pending_note = ""
+    pending_sources = ""
+    count = 0
+    for line in path.read_text(encoding="utf-8", errors="ignore").splitlines():
+        note_m = NOTE_RE.match(line)
+        if note_m:
+            pending_note = note_m.group(1).strip()
+            continue
+        src_m = SRC_RE.match(line)
+        if src_m:
+            try:
+                pending_sources = ", ".join(spec.text for spec in normalize_sources(src_m.group(1)))
+            except ValueError:
+                pending_sources = ""
+            continue
+        tcp_m = TCP_RE.search(line)
+        if not tcp_m:
+            continue
+        lport = int(tcp_m.group(1))
+        dest_ip = tcp_m.group(2)
+        dest_port = int(tcp_m.group(3))
+        open_access = not bool(pending_sources)
+        state.add_rule(lport, dest_ip, dest_port, note=pending_note, open_access=open_access)
+        if pending_sources:
+            for spec in normalize_sources(pending_sources):
+                state.add_allow("public", spec.text, "manual", spec.prefix_len, note=f"imported for port {lport}")
+        pending_note = ""
+        pending_sources = ""
+        count += 1
+    return count

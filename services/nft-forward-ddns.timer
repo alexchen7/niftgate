@@ -1,0 +1,11 @@
+[Unit]
+Description=Run nft-forward DDNS whitelist sync periodically
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=5min
+AccuracySec=30s
+Persistent=true
+
+[Install]
+WantedBy=timers.target

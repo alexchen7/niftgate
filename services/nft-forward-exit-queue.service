@@ -1,0 +1,15 @@
+[Unit]
+Description=nft-forward exit-node relay retry queue
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+Environment=NFT_FORWARD_CONFIG=/etc/nft-forward-exit/config.json
+WorkingDirectory=/opt/nft-forward
+ExecStart=/usr/local/bin/nft.sh run-exit-queue
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

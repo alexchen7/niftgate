@@ -1,0 +1,52 @@
+{
+  "role": "relay",
+  "mode": "regular",
+  "dynamic_ttl_days": 3650,
+  "reserved_ports": [80, 443, 8080, 8443],
+  "paths": {
+    "state_db": "/var/lib/nft-forward/state.db",
+    "nft_conf": "/etc/nftables.d/port-forward.conf",
+    "main_nft_conf": "/etc/nftables.conf",
+    "audit_log": "/var/log/nft-forward/audit.jsonl",
+    "blocked_log": "/var/log/nft-forward/blocked.jsonl",
+    "ip_cache": "/opt/nft-forward/cache/iplist"
+  },
+  "ssh": {
+    "relay_host": "relay.example.com",
+    "relay_user": "root",
+    "relay_port": 22,
+    "relay_key": "/etc/nft-forward-exit/ssh/relay_ed25519",
+    "relay_auth_method": "key",
+    "relay_password_file": "",
+    "exit_host": "exit.example.com",
+    "exit_user": "root",
+    "exit_port": 22,
+    "exit_key": "/etc/nft-forward/ssh/exit_ed25519",
+    "exit_auth_method": "key",
+    "exit_password_file": "",
+    "timeout": 8
+  },
+  "telegram": {
+    "token": "",
+    "admin_ids": [],
+    "timeout": 20
+  },
+  "phone": {
+    "bind": "127.0.0.1",
+    "port": 18088,
+    "public_port": 18443,
+    "public_host": "",
+    "public_scheme": "https",
+    "secret_path": "replace-with-long-random-secret"
+  },
+  "geo": {
+    "timeout": 5,
+    "fallback_url": "https://ipwho.is/{ip}"
+  },
+  "ddns": [
+    {
+      "host": "home.example.com",
+      "ruleset": "public"
+    }
+  ]
+}

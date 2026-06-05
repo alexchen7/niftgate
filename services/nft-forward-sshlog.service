@@ -1,0 +1,15 @@
+[Unit]
+Description=nft-forward SSH successful-login whitelist monitor
+After=network-online.target ssh.service sshd.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+Environment=NFT_FORWARD_CONFIG=/etc/nft-forward/config.json
+WorkingDirectory=/opt/nft-forward
+ExecStart=/usr/local/bin/nft.sh run-sshlog
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

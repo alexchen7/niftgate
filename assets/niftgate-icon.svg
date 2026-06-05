@@ -1,0 +1,27 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-labelledby="title desc">
+  <title id="title">NiftGate icon</title>
+  <desc id="desc">A shielded relay gate with circuit paths and a keyhole.</desc>
+  <defs>
+    <linearGradient id="bg" x1="80" y1="40" x2="430" y2="470" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#14b8a6"/>
+      <stop offset="0.45" stop-color="#2563eb"/>
+      <stop offset="1" stop-color="#111827"/>
+    </linearGradient>
+    <linearGradient id="gate" x1="145" y1="120" x2="375" y2="410" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#f8fafc"/>
+      <stop offset="1" stop-color="#a7f3d0"/>
+    </linearGradient>
+  </defs>
+  <rect width="512" height="512" rx="112" fill="#0f172a"/>
+  <path d="M256 40 430 104v123c0 113-70 189-174 225C152 416 82 340 82 227V104L256 40Z" fill="url(#bg)"/>
+  <path d="M154 186c0-31 25-56 56-56h112c31 0 56 25 56 56v190h-58V196c0-10-8-18-18-18h-72c-10 0-18 8-18 18v180h-58V186Z" fill="url(#gate)"/>
+  <path d="M130 376h252" stroke="#f8fafc" stroke-width="28" stroke-linecap="round"/>
+  <path d="M256 218a42 42 0 0 0-18 80v44h36v-44a42 42 0 0 0-18-80Z" fill="#0f172a"/>
+  <path d="M98 170h55M379 170h35M98 256h64M352 256h66M121 330h38M358 330h45" stroke="#67e8f9" stroke-width="16" stroke-linecap="round"/>
+  <circle cx="98" cy="170" r="12" fill="#67e8f9"/>
+  <circle cx="414" cy="170" r="12" fill="#67e8f9"/>
+  <circle cx="98" cy="256" r="12" fill="#67e8f9"/>
+  <circle cx="418" cy="256" r="12" fill="#67e8f9"/>
+  <circle cx="121" cy="330" r="12" fill="#67e8f9"/>
+  <circle cx="403" cy="330" r="12" fill="#67e8f9"/>
+</svg>
