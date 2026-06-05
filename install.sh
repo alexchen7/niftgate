@@ -40,6 +40,13 @@ run() {
     fi
 }
 
+apt_install() {
+    run env DEBIAN_FRONTEND=noninteractive apt-get install -y \
+        -o Dpkg::Options::=--force-confdef \
+        -o Dpkg::Options::=--force-confold \
+        "$@"
+}
+
 ask() {
     local prompt="$1" default="${2:-}" value
     if [[ -n "$default" ]]; then
@@ -99,7 +106,7 @@ install_common() {
     fi
     if command -v apt-get >/dev/null 2>&1; then
         run apt-get update -y
-        run apt-get install -y python3 openssh-client openssh-server systemd tar
+        apt_install python3 openssh-client openssh-server systemd tar
     fi
     run mkdir -p "${INSTALL_DIR}"
     run cp -a "${PROJECT_DIR}/." "${INSTALL_DIR}/"
@@ -139,7 +146,7 @@ setup_exit_config() {
     else
         relay_pass="$(secret_ask "Relay SSH password")"
         if command -v apt-get >/dev/null 2>&1 && ! command -v sshpass >/dev/null 2>&1; then
-            run apt-get install -y sshpass
+            apt_install sshpass
         fi
     fi
     ddns_host="$(ask "Optional DDNS whitelist hostname" "")"
@@ -237,7 +244,7 @@ EOF_NGINX
 install_exit() {
     install_common
     if command -v apt-get >/dev/null 2>&1; then
-        run apt-get install -y nginx openssl
+        apt_install nginx openssl
     fi
     run systemctl enable --now nginx
     setup_exit_config
