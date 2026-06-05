@@ -58,6 +58,26 @@ ask() {
     fi
 }
 
+ask_auth_method() {
+    local value
+    while true; do
+        value="$(ask "Relay SSH auth method: type 'password' or 'key' (do not enter the secret here)" "password")"
+        case "${value,,}" in
+            password|pass)
+                printf '%s' "password"
+                return 0
+                ;;
+            key|passkey|ssh-key|sshkey)
+                printf '%s' "key"
+                return 0
+                ;;
+            *)
+                echo "Please enter only 'password' or 'key'. The actual secret is requested on the next prompt." >&2
+                ;;
+        esac
+    done
+}
+
 secret_ask() {
     local prompt="$1" value
     read -rsp "${prompt}: " value
@@ -138,7 +158,7 @@ setup_exit_config() {
     relay_host="$(ask "Relay intranet IP/host")"
     relay_user="$(ask "Relay SSH user" "root")"
     relay_port="$(ask "Relay SSH port" "22")"
-    relay_auth="$(ask "Relay SSH auth method (key/password)" "password")"
+    relay_auth="$(ask_auth_method)"
     relay_key=""
     relay_pass=""
     if [[ "$relay_auth" == "key" ]]; then
