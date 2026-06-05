@@ -137,6 +137,9 @@ phone['public_port'] = int('$public_port')
 phone['public_scheme'] = 'https'
 phone['port'] = int('$backend_port')
 phone['bind'] = '127.0.0.1'
+import secrets
+if not phone.get('secret_path') or phone.get('secret_path', '').startswith('replace-with'):
+    phone['secret_path'] = 'wl-' + secrets.token_urlsafe(48)
 data['ddns'] = ([{'host': '$ddns_host', 'ruleset': 'public'}] if '$ddns_host' else data.get('ddns', []))
 telegram = data.setdefault('telegram', {})
 telegram['token'] = '$tg_token'
@@ -252,6 +255,19 @@ install_relay_remote() {
     else
         scp -i "$key" -P "$port" /tmp/nft-forward-install.tgz "${user}@${host}:${tmp}"
         ssh -i "$key" -o BatchMode=yes -o ConnectTimeout=8 -p "$port" "${user}@${host}" "mkdir -p /tmp/nft-forward-install && tar -xzf ${tmp} -C /tmp/nft-forward-install && bash /tmp/nft-forward-install/scripts/init_relay.sh"
+    fi
+
+    local secret_path secret_b64 remote_secret_cmd
+    secret_path="$(python3 -c "import json;d=json.load(open('$cfg'));print(d.get('phone',{}).get('secret_path',''))")"
+    if [[ -n "${secret_path}" ]]; then
+        secret_b64="$(printf '%s' "${secret_path}" | base64 | tr -d '\n')"
+        remote_secret_cmd="secret=\$(printf '%s' '${secret_b64}' | base64 -d); NFT_FORWARD_CONFIG=/etc/nft-forward/config.json /usr/local/bin/nft.sh secret-url create --ruleset public --label default --path \"\$secret\" 2>/dev/null || true"
+        if [[ "$auth" == "password" ]]; then
+            sshpass -f "$passfile" ssh -o BatchMode=no -o ConnectTimeout=8 -p "$port" "${user}@${host}" "${remote_secret_cmd}"
+        else
+            ssh -i "$key" -o BatchMode=yes -o ConnectTimeout=8 -p "$port" "${user}@${host}" "${remote_secret_cmd}"
+        fi
+        NFT_FORWARD_CONFIG="${EXIT_CONFIG_DIR}/config.json" /usr/local/bin/nft.sh sync-from-relay || true
     fi
 }
 
