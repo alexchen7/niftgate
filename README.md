@@ -219,7 +219,7 @@ nft.sh import niftgate-export.json --merge
 Replace current managed relay state with an export:
 
 ```bash
-nft.sh import niftgate-full-export.json --replace
+niftgate-full-export.json --replace
 ```
 
 After import, run:
@@ -238,13 +238,31 @@ nft.sh apply
    nft.sh pair-exit --host <exit-host-or-ip> --user root --auth-method password
    ```
 
-4. On the exit node, sync relay-owned state:
+4. On the exit node, verify or change the relay connection without re-entering
+   the full setup:
+
+   ```bash
+   nft.sh pair-relay
+   nft.sh pair-relay --host <relay-intranet-ip> --user root --port 22 --auth-method password --ask-password --test
+   ```
+
+   To switch to key auth later:
+
+   ```bash
+   nft.sh pair-relay --auth-method key --key /etc/nft-forward-exit/ssh/relay_ed25519 --clear-password --test
+   ```
+
+   `pair-relay` updates only the relay SSH block in the exit-node config and
+   try-restarts active exit services. Add `--no-restart` if you want to restart
+   services manually.
+
+5. On the exit node, sync relay-owned state:
 
    ```bash
    nft.sh sync-from-relay
    ```
 
-5. Restart exit services:
+6. Restart exit services if you used `--no-restart`:
 
    ```bash
    sudo systemctl restart nft-forward-exit-phone.service nft-forward-exit-queue.service
