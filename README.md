@@ -219,7 +219,7 @@ nft.sh import niftgate-export.json --merge
 Replace current managed relay state with an export:
 
 ```bash
-niftgate-full-export.json --replace
+nft.sh import niftgate-full-export.json --replace
 ```
 
 After import, run:
