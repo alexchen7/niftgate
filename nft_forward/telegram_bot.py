@@ -24,12 +24,16 @@ LABELS = {
     "whitelist": ("Whitelisted IPs", "白名单 IP"),
     "rules": ("Forwarding Rules", "转发规则"),
     "rulesets": ("Custom Rule Sets", "自定义规则集"),
+    "rule_sets": ("Rule Sets", "规则集"),
     "blocked": ("Blocked IPs", "拦截 IP"),
     "add_rule": ("Add Forwarding Rule", "新增转发规则"),
     "remove_rule": ("Remove Forwarding Rule", "删除转发规则"),
     "change_rulesets": ("Change Rule Sets", "修改规则集"),
     "edit_rule": ("Edit Forwarding Rule", "编辑转发规则"),
     "ruleset_sources": ("Rule Set Sources", "规则集来源"),
+    "create_ruleset": ("Create Rule Set", "创建规则集"),
+    "delete_ruleset": ("Delete Rule Sets", "删除规则集"),
+    "view_rulesets": ("View Rule Sets", "查看规则集"),
     "secret_url": ("Secret URL", "Secret URL"),
     "ddns": ("DDNS", "DDNS"),
     "view_sources": ("View Sources", "查看来源"),
@@ -163,6 +167,7 @@ def manage_keyboard(settings: Settings | None = None) -> dict[str, Any]:
             [(label(settings, "remove_rule"), "manage:remove_rule")],
             [(label(settings, "change_rulesets"), "manage:change_rulesets")],
             [(label(settings, "edit_rule"), "manage:edit_rule")],
+            [(label(settings, "rule_sets"), "manage:rule_sets")],
             [(label(settings, "ruleset_sources"), "manage:ruleset_sources")],
             [(label(settings, "secret_url"), "manage:secret_url")],
             [(label(settings, "ddns"), "manage:ddns")],
@@ -200,6 +205,17 @@ def ruleset_sources_keyboard(settings: Settings | None = None) -> dict[str, Any]
             [(label(settings, "view_sources"), "sources:list")],
             [(label(settings, "add_source"), "sources:add")],
             [(label(settings, "remove_source"), "sources:remove")],
+            [(label(settings, "back"), "menu:manage")],
+        ]
+    )
+
+
+def rule_sets_keyboard(settings: Settings | None = None) -> dict[str, Any]:
+    return keyboard(
+        [
+            [(label(settings, "view_rulesets"), "rulesets:list")],
+            [(label(settings, "create_ruleset"), "rulesets:create")],
+            [(label(settings, "delete_ruleset"), "rulesets:delete")],
             [(label(settings, "back"), "menu:manage")],
         ]
     )
@@ -246,6 +262,10 @@ def short_time(value: Any) -> str:
 def one_line(value: Any, default: str = "-") -> str:
     text = str(value if value not in (None, "") else default)
     return " ".join(text.split())
+
+
+def safe_ruleset_name(value: str) -> bool:
+    return bool(value) and all(ch.isascii() and (ch.isalnum() or ch in {"-", "_", "."}) for ch in value)
 
 
 def format_source(settings: Settings, entry: dict[str, Any]) -> str:
@@ -454,6 +474,73 @@ def ruleset_names(settings: Settings) -> list[str]:
             if name and name not in names:
                 names.append(name)
     return names
+
+
+def ruleset_rows(settings: Settings) -> tuple[bool, list[dict[str, Any]], str]:
+    ok, rows, out = relay_json(settings, ["ruleset", "list", "--json"], [])
+    if ok and isinstance(rows, list):
+        return True, rows, out
+    ok_text, out_text = relay_text(settings, ["ruleset", "list"])
+    if not ok_text:
+        return False, [], out_text
+    parsed: list[dict[str, Any]] = []
+    for line in out_text.splitlines():
+        if not line.strip():
+            continue
+        parts = line.split("\t")
+        parsed.append({"name": parts[0], "channels": [], "prefixes": {}, "note": parts[-1] if len(parts) > 1 else ""})
+    return True, parsed, out_text
+
+
+def format_ruleset(settings: Settings, row: dict[str, Any]) -> str:
+    channels = ",".join(row.get("channels") or []) or "-"
+    prefixes = row.get("prefixes") or {}
+    prefix_text = ", ".join(f"{key}=/{value}" for key, value in sorted(prefixes.items())) or "-"
+    if is_zh(settings):
+        return f"{row.get('name')}\n  通道: {channels}\n  前缀: {prefix_text}\n  备注: {one_line(row.get('note'))}"
+    return f"{row.get('name')}\n  channels: {channels}\n  prefixes: {prefix_text}\n  note: {one_line(row.get('note'))}"
+
+
+def render_rule_sets_menu(settings: Settings) -> tuple[str, dict[str, Any]]:
+    return text(
+        settings,
+        "Rule Sets\nCreate or remove custom rule sets. The public rule set is built in and cannot be removed.",
+        "规则集\n创建或删除自定义规则集。public 是内置规则集，不能删除。",
+    ), rule_sets_keyboard(settings)
+
+
+def render_rule_sets_list(settings: Settings) -> tuple[str, dict[str, Any]]:
+    ok, rows, out = ruleset_rows(settings)
+    if not ok:
+        return text(settings, f"Rule Sets\nrelay error: {out}", f"规则集\n中继错误：{out}"), rule_sets_keyboard(settings)
+    body = "\n\n".join(format_ruleset(settings, row) for row in rows) or text(settings, "No rule sets.", "没有规则集。")
+    return text(settings, f"Rule Sets ({len(rows)})\n\n{body}", f"规则集（{len(rows)}）\n\n{body}"), rule_sets_keyboard(settings)
+
+
+def render_rule_sets_delete(settings: Settings, chat_id: int) -> tuple[str, dict[str, Any]]:
+    ok, rows, out = ruleset_rows(settings)
+    if not ok:
+        return text(settings, f"Delete Rule Sets\nrelay error: {out}", f"删除规则集\n中继错误：{out}"), rule_sets_keyboard(settings)
+    custom = [row for row in rows if row.get("name") != "public"]
+    selected = set()
+    pending = PENDING_ACTIONS.get(chat_id)
+    if pending and pending.get("action") == "ruleset_delete":
+        selected = {x for x in pending.get("selected", "").split(",") if x}
+    PENDING_ACTIONS[chat_id] = {"action": "ruleset_delete", "selected": ",".join(sorted(selected))}
+    button_rows: list[list[tuple[str, str]]] = []
+    for row in custom[:30]:
+        name = str(row.get("name"))
+        mark = "[x]" if name in selected else "[ ]"
+        button_rows.append([(f"{mark} {name}", f"rulesets:toggle:{name}")])
+    if not button_rows:
+        button_rows.append([(text(settings, "No custom rule sets", "没有自定义规则集"), "manage:rule_sets")])
+    button_rows.append([(label(settings, "delete_selected"), "rulesets:delete_selected"), (label(settings, "clear"), "rulesets:clear_delete")])
+    button_rows.append([(label(settings, "back"), "manage:rule_sets")])
+    return text(
+        settings,
+        "Delete Rule Sets\nSelect custom rule sets, then delete selected. References will be cleaned up on the relay.",
+        "删除规则集\n请选择自定义规则集，然后删除所选。中继端会清理相关引用。",
+    ), keyboard(button_rows)
 
 
 def render_secret_generate(settings: Settings) -> tuple[str, dict[str, Any]]:
@@ -799,6 +886,28 @@ def handle_pending(settings: Settings, chat_id: int, message_text: str) -> tuple
         refresh_ok, refresh_out = relay_text(settings, ["sync-ddns"])
         suffix = text(settings, f"\n\nRefresh: {refresh_out}", f"\n\n刷新：{refresh_out}") if refresh_ok else text(settings, f"\n\nRefresh failed: {refresh_out}", f"\n\n刷新失败：{refresh_out}")
         return text(settings, f"DDNS record added\n{out}{suffix}", f"DDNS 记录已添加\n{out}{suffix}"), ddns_keyboard(settings)
+    if action == "ruleset_create":
+        if len(parts) < 1:
+            return text(
+                settings,
+                "Create Rule Set\nSend one line:\nname [note]",
+                "创建规则集\n发送一行：\n名称 [备注]",
+            ), rule_sets_keyboard(settings)
+        name = parts[0]
+        if name == "public":
+            return text(settings, "The public rule set already exists.", "public 规则集已经存在。"), rule_sets_keyboard(settings)
+        if not safe_ruleset_name(name):
+            return text(
+                settings,
+                "Rule set name can only use letters, numbers, dot, dash, or underscore.",
+                "规则集名称只能使用字母、数字、点、短横线或下划线。",
+            ), rule_sets_keyboard(settings)
+        note = " ".join(parts[1:])
+        args = ["ruleset", "create", name]
+        if note:
+            args += ["--note", note]
+        ok, out = relay_text(settings, args)
+        return (out if ok else text(settings, f"relay error: {out}", f"中继错误：{out}")), rule_sets_keyboard(settings)
     if action == "source_add":
         if len(parts) < 1:
             return text(
@@ -899,6 +1008,43 @@ def handle_callback(settings: Settings, data: str) -> tuple[str, dict[str, Any] 
 
 
 def handle_callback_for_chat(settings: Settings, chat_id: int, data: str) -> tuple[str, dict[str, Any] | None]:
+    if data == "manage:rule_sets":
+        PENDING_ACTIONS.pop(chat_id, None)
+        return render_rule_sets_menu(settings)
+    if data == "rulesets:list":
+        PENDING_ACTIONS.pop(chat_id, None)
+        return render_rule_sets_list(settings)
+    if data == "rulesets:create":
+        PENDING_ACTIONS[chat_id] = {"action": "ruleset_create"}
+        return text(
+            settings,
+            "Create Rule Set\nSend one line:\nname [note]",
+            "创建规则集\n发送一行：\n名称 [备注]",
+        ), rule_sets_keyboard(settings)
+    if data == "rulesets:delete":
+        return render_rule_sets_delete(settings, chat_id)
+    if data.startswith("rulesets:toggle:"):
+        name = data.split(":", 2)[2]
+        pending = PENDING_ACTIONS.get(chat_id, {"action": "ruleset_delete", "selected": ""})
+        selected = {x for x in pending.get("selected", "").split(",") if x}
+        if name in selected:
+            selected.remove(name)
+        else:
+            selected.add(name)
+        PENDING_ACTIONS[chat_id] = {"action": "ruleset_delete", "selected": ",".join(sorted(selected))}
+        return render_rule_sets_delete(settings, chat_id)
+    if data == "rulesets:clear_delete":
+        PENDING_ACTIONS[chat_id] = {"action": "ruleset_delete", "selected": ""}
+        return render_rule_sets_delete(settings, chat_id)
+    if data == "rulesets:delete_selected":
+        pending = PENDING_ACTIONS.get(chat_id, {"selected": ""})
+        names = [x for x in pending.get("selected", "").split(",") if x]
+        if not names:
+            return text(settings, "Delete Rule Sets\nNo rule sets selected.", "删除规则集\n尚未选择规则集。"), rule_sets_keyboard(settings)
+        ok, out = relay_text(settings, ["ruleset", "delete"] + names)
+        PENDING_ACTIONS.pop(chat_id, None)
+        sync_from_relay(settings)
+        return (out if ok else text(settings, f"relay error: {out}", f"中继错误：{out}")), rule_sets_keyboard(settings)
     if data == "manage:edit_rule":
         PENDING_ACTIONS.pop(chat_id, None)
         return render_edit_rule_list(settings)

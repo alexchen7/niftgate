@@ -206,6 +206,41 @@ class State:
         self.conn.commit()
         self.audit("ruleset_updated", name=name, channels=sorted(channels), prefixes=prefixes)
 
+    def delete_ruleset(self, name: str) -> dict[str, Any]:
+        if name == DEFAULT_RULESET:
+            raise ValueError("public ruleset cannot be deleted")
+        row = self.conn.execute("SELECT name FROM rulesets WHERE name=?", (name,)).fetchone()
+        if not row:
+            return {
+                "name": name,
+                "deleted": False,
+                "removed_allow_entries": 0,
+                "detached_forward_rules": 0,
+                "disabled_secret_urls": 0,
+            }
+
+        allow_cur = self.conn.execute("DELETE FROM allow_entries WHERE ruleset=?", (name,))
+        detached = 0
+        for rule in self.conn.execute("SELECT id,rulesets FROM forward_rules").fetchall():
+            refs = json.loads(rule["rulesets"])
+            if name not in refs:
+                continue
+            refs = [ref for ref in refs if ref != name]
+            self.conn.execute("UPDATE forward_rules SET rulesets=? WHERE id=?", (json.dumps(refs), rule["id"]))
+            detached += 1
+        url_cur = self.conn.execute("UPDATE secret_urls SET active=0 WHERE ruleset=? AND active=1", (name,))
+        self.conn.execute("DELETE FROM rulesets WHERE name=?", (name,))
+        self.conn.commit()
+        summary = {
+            "name": name,
+            "deleted": True,
+            "removed_allow_entries": allow_cur.rowcount,
+            "detached_forward_rules": detached,
+            "disabled_secret_urls": url_cur.rowcount,
+        }
+        self.audit("ruleset_deleted", **summary)
+        return summary
+
     def ruleset(self, name: str) -> sqlite3.Row:
         row = self.conn.execute("SELECT * FROM rulesets WHERE name=?", (name,)).fetchone()
         if not row:

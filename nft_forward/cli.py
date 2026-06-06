@@ -235,13 +235,48 @@ def cmd_ruleset(args: argparse.Namespace) -> int:
     state = state_for(settings)
     try:
         if args.ruleset_action == "list":
+            if args.json:
+                print_json(
+                    [
+                        {
+                            "name": row["name"],
+                            "channels": json.loads(row["channels"]),
+                            "prefixes": json.loads(row["prefixes"]),
+                            "note": row["note"],
+                        }
+                        for row in state.rulesets()
+                    ]
+                )
+                return 0
             for row in state.rulesets():
                 print(f"{row['name']}\tchannels={row['channels']}\tprefixes={row['prefixes']}\t{row['note']}")
-        elif args.ruleset_action == "set":
+        elif args.ruleset_action in {"create", "set"}:
             channels = args.channels.split(",") if args.channels else ["manual", "ssh_login", "ddns", "web"]
             prefixes = {"manual": args.manual_prefix, "ssh_login": args.ssh_prefix, "ddns": args.ddns_prefix, "web": args.web_prefix}
             state.update_ruleset(args.name, channels, prefixes, args.note or "")
             print(f"ruleset updated: {args.name}")
+        elif args.ruleset_action == "delete":
+            data = read_config_json(settings)
+            rows = ddns_entries(data)
+            names = set(args.name)
+            summaries = []
+            removed_ddns = 0
+            for name in args.name:
+                summary = state.delete_ruleset(name)
+                summaries.append(summary)
+            if rows:
+                kept = []
+                for row in rows:
+                    if row["ruleset"] in names:
+                        removed_ddns += 1
+                    else:
+                        kept.append({**row, "id": len(kept) + 1})
+                if removed_ddns:
+                    set_ddns_entries(data, kept)
+                    write_config_json(settings, data)
+            if args.apply:
+                write_and_apply(settings, state, apply=True)
+            print_json({"deleted": summaries, "removed_ddns_records": removed_ddns})
     finally:
         state.close()
     return 0
@@ -869,6 +904,16 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("ruleset")
     rs = p.add_subparsers(dest="ruleset_action", required=True)
     q = rs.add_parser("list")
+    q.add_argument("--json", action="store_true")
+    q.set_defaults(func=cmd_ruleset)
+    q = rs.add_parser("create")
+    q.add_argument("name")
+    q.add_argument("--channels", help="comma-separated channel list")
+    q.add_argument("--manual-prefix", type=int, choices=[24, 32], default=32)
+    q.add_argument("--ssh-prefix", type=int, choices=[24, 32], default=24)
+    q.add_argument("--ddns-prefix", type=int, choices=[24, 32], default=24)
+    q.add_argument("--web-prefix", type=int, choices=[24, 32], default=24)
+    q.add_argument("--note")
     q.set_defaults(func=cmd_ruleset)
     q = rs.add_parser("set")
     q.add_argument("name")
@@ -878,6 +923,10 @@ def build_parser() -> argparse.ArgumentParser:
     q.add_argument("--ddns-prefix", type=int, choices=[24, 32], default=24)
     q.add_argument("--web-prefix", type=int, choices=[24, 32], default=24)
     q.add_argument("--note")
+    q.set_defaults(func=cmd_ruleset)
+    q = rs.add_parser("delete")
+    q.add_argument("name", nargs="+")
+    q.add_argument("--no-apply", dest="apply", action="store_false", default=True)
     q.set_defaults(func=cmd_ruleset)
 
     p = sub.add_parser("list")

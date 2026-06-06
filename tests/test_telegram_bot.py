@@ -109,6 +109,27 @@ class TelegramBotTests(unittest.TestCase):
                     'public\tchannels=["ddns","manual","ssh_login","web"]\tprefixes={}\t\n'
                     'ddns\tchannels=["manual"]\tprefixes={}\tddns'
                 )
+            if args == ["ruleset", "list", "--json"]:
+                return True, json.dumps(
+                    [
+                        {
+                            "name": "public",
+                            "channels": ["ddns", "manual", "ssh_login", "web"],
+                            "prefixes": {"manual": 32, "ssh_login": 24, "ddns": 24, "web": 24},
+                            "note": "",
+                        },
+                        {
+                            "name": "ddns",
+                            "channels": ["manual"],
+                            "prefixes": {"manual": 32},
+                            "note": "ddns",
+                        },
+                    ]
+                )
+            if args[:2] == ["ruleset", "create"]:
+                return True, f"ruleset updated: {args[2]}"
+            if args[:2] == ["ruleset", "delete"]:
+                return True, json.dumps({"deleted": [{"name": name, "deleted": True} for name in args[2:]], "removed_ddns_records": 0})
             if args == ["secret-url", "list", "--include-secrets"]:
                 return True, json.dumps(
                     [
@@ -305,6 +326,24 @@ class TelegramBotTests(unittest.TestCase):
         self.assertIn(["edit-rule", "58495", "--clear-rulesets", "--ruleset", "ddns"], calls)
         self.assertIn(["edit-rule", "58495", "--clear-note"], calls)
         self.assertIn(["edit-rule", "58495", "--note", "new note"], calls)
+
+    def test_rule_sets_menu_creates_lists_and_deletes(self) -> None:
+        calls: list[list[str]] = []
+        with patch.object(telegram_bot, "relay_args", self.fake_relay(calls)):
+            text, _markup = telegram_bot.handle_callback_for_chat(settings(), 123, "rulesets:list")
+            self.assertIn("public", text)
+            self.assertIn("ddns", text)
+            text, _markup = telegram_bot.handle_callback_for_chat(settings(), 123, "rulesets:create")
+            self.assertIn("Create Rule Set", text)
+            text, _markup = telegram_bot.handle_message(settings(), 123, "office workplace exits")
+            self.assertEqual(text, "ruleset updated: office")
+            text, _markup = telegram_bot.handle_callback_for_chat(settings(), 123, "rulesets:delete")
+            self.assertIn("ddns", str(_markup))
+            telegram_bot.handle_callback_for_chat(settings(), 123, "rulesets:toggle:ddns")
+            text, _markup = telegram_bot.handle_callback_for_chat(settings(), 123, "rulesets:delete_selected")
+            self.assertIn('"removed_ddns_records": 0', text)
+        self.assertIn(["ruleset", "create", "office", "--note", "workplace exits"], calls)
+        self.assertIn(["ruleset", "delete", "ddns"], calls)
 
 
 if __name__ == "__main__":

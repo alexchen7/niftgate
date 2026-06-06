@@ -304,6 +304,47 @@ class CoreTests(unittest.TestCase):
             self.assertEqual(rows[0].ruleset, "public")
             state.close()
 
+    def test_ruleset_create_and_delete_cleans_references(self) -> None:
+        with self.tempdir() as td:
+            cfg = Path(td) / "config.json"
+            state_db = Path(td) / "state.db"
+            cfg.write_text(
+                json.dumps(
+                    {
+                        "paths": {"state_db": str(state_db)},
+                        "ddns": [{"host": "mobile.example.com", "ruleset": "office", "enabled": True}],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            self.assertEqual(
+                cli_main(["--config", str(cfg), "ruleset", "create", "office", "--note", "work exits"]),
+                0,
+            )
+            state = State(state_db)
+            state.add_rule(58495, "203.0.113.20", 58495, rulesets=["office"])
+            state.add_allow("office", "198.51.100.0/24", "manual", 24)
+            state.create_secret_url("office-secret", ruleset="office", label="office")
+            state.close()
+
+            self.assertEqual(cli_main(["--config", str(cfg), "ruleset", "delete", "office", "--no-apply"]), 0)
+            data = json.loads(cfg.read_text(encoding="utf-8"))
+            self.assertEqual(data["ddns"], [])
+            state = State(state_db)
+            self.assertNotIn("office", [row["name"] for row in state.rulesets()])
+            rule = state.rule_by_lport(58495)
+            self.assertEqual(rule.rulesets, [])
+            self.assertEqual(state.all_allow_entries(), [])
+            self.assertEqual(state.secret_urls(), [])
+            state.close()
+
+    def test_public_ruleset_cannot_be_deleted(self) -> None:
+        with self.tempdir() as td:
+            cfg = Path(td) / "config.json"
+            state_db = Path(td) / "state.db"
+            cfg.write_text(json.dumps({"paths": {"state_db": str(state_db)}}), encoding="utf-8")
+            self.assertEqual(cli_main(["--config", str(cfg), "ruleset", "delete", "public", "--no-apply"]), 1)
+
 
 if __name__ == "__main__":
     unittest.main()
