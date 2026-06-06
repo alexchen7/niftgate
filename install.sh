@@ -10,6 +10,7 @@ NIFTGATE_ARCHIVE_URL="${NIFTGATE_ARCHIVE_URL:-https://github.com/alexchen7/niftg
 BOOTSTRAP_TMP=""
 DRY_RUN=0
 MODE="full"
+INSTALL_LANG="${INSTALL_LANG:-en}"
 
 usage() {
     cat <<'EOF'
@@ -62,10 +63,66 @@ ask() {
     fi
 }
 
+normalize_lang() {
+    case "${1,,}" in
+        zh|cn|zh-cn|chinese) printf '%s' "zh" ;;
+        *) printf '%s' "en" ;;
+    esac
+}
+
+msg() {
+    if [[ "${INSTALL_LANG}" == "zh" ]]; then
+        printf '%s' "$2"
+    else
+        printf '%s' "$1"
+    fi
+}
+
+load_existing_language() {
+    local cfg="${EXIT_CONFIG_DIR}/config.json" current
+    if [[ -f "$cfg" ]] && command -v python3 >/dev/null 2>&1; then
+        current="$(python3 - "$cfg" <<'PY' 2>/dev/null || true
+import json, sys
+try:
+    data = json.load(open(sys.argv[1], encoding="utf-8"))
+    print(data.get("ui", {}).get("language", data.get("language", "")))
+except Exception:
+    pass
+PY
+)"
+        if [[ -n "$current" ]]; then
+            INSTALL_LANG="$(normalize_lang "$current")"
+        fi
+    else
+        INSTALL_LANG="$(normalize_lang "$INSTALL_LANG")"
+    fi
+}
+
+choose_language() {
+    local value
+    load_existing_language
+    while true; do
+        value="$(ask "Language / 语言: English or 中文 (en/zh)" "$INSTALL_LANG")"
+        case "${value,,}" in
+            en|english)
+                INSTALL_LANG="en"
+                return 0
+                ;;
+            zh|cn|zh-cn|chinese)
+                INSTALL_LANG="zh"
+                return 0
+                ;;
+            *)
+                echo "Please enter en or zh. / 请输入 en 或 zh。" >&2
+                ;;
+        esac
+    done
+}
+
 ask_auth_method() {
     local value
     while true; do
-        value="$(ask "Relay SSH auth method: type 'password' or 'key' (do not enter the secret here)" "password")"
+        value="$(ask "$(msg "Relay SSH auth method: type 'password' or 'key' (do not enter the secret here)" "中继 SSH 认证方式：输入 'password' 或 'key'（这里不要输入密码/密钥内容）")" "password")"
         case "${value,,}" in
             password|pass)
                 printf '%s' "password"
@@ -76,7 +133,7 @@ ask_auth_method() {
                 return 0
                 ;;
             *)
-                echo "Please enter only 'password' or 'key'. The actual secret is requested on the next prompt." >&2
+                echo "$(msg "Please enter only 'password' or 'key'. The actual secret is requested on the next prompt." "请输入 'password' 或 'key'。真正的密码/密钥会在下一步询问。")" >&2
                 ;;
         esac
     done
@@ -156,26 +213,27 @@ PY
 
 setup_exit_config() {
     local domain public_port backend_port tg_token tg_chat relay_host relay_user relay_port relay_auth relay_key relay_pass ddns_host
-    domain="$(ask "Secret URL domain/public host")"
-    public_port="$(ask "Secret URL public TLS port" "18443")"
-    backend_port="$(ask "Secret URL backend port" "18088")"
-    relay_host="$(ask "Relay intranet IP/host")"
-    relay_user="$(ask "Relay SSH user" "root")"
-    relay_port="$(ask "Relay SSH port" "22")"
+    choose_language
+    domain="$(ask "$(msg "Secret URL domain/public host" "Secret URL 域名/公网主机名")")"
+    public_port="$(ask "$(msg "Secret URL public TLS port" "Secret URL 公网 TLS 端口")" "18443")"
+    backend_port="$(ask "$(msg "Secret URL backend port" "Secret URL 后端端口")" "18088")"
+    relay_host="$(ask "$(msg "Relay intranet IP/host" "中继服务器内网 IP/主机名")")"
+    relay_user="$(ask "$(msg "Relay SSH user" "中继服务器 SSH 用户")" "root")"
+    relay_port="$(ask "$(msg "Relay SSH port" "中继服务器 SSH 端口")" "22")"
     relay_auth="$(ask_auth_method)"
     relay_key=""
     relay_pass=""
     if [[ "$relay_auth" == "key" ]]; then
-        relay_key="$(ask "Relay SSH key path" "${EXIT_CONFIG_DIR}/ssh/relay_ed25519")"
+        relay_key="$(ask "$(msg "Relay SSH key path" "中继服务器 SSH 密钥路径")" "${EXIT_CONFIG_DIR}/ssh/relay_ed25519")"
     else
-        relay_pass="$(secret_ask "Relay SSH password")"
+        relay_pass="$(secret_ask "$(msg "Relay SSH password" "中继服务器 SSH 密码")")"
         if command -v apt-get >/dev/null 2>&1 && ! command -v sshpass >/dev/null 2>&1; then
             apt_install sshpass
         fi
     fi
-    ddns_host="$(ask "Optional DDNS whitelist hostname" "")"
-    tg_token="$(ask "Optional Telegram bot token" "")"
-    tg_chat="$(ask "Optional Telegram ChatID" "")"
+    ddns_host="$(ask "$(msg "Optional DDNS whitelist hostname" "可选 DDNS 白名单主机名")" "")"
+    tg_token="$(ask "$(msg "Optional Telegram bot token" "可选 Telegram 机器人 Token")" "")"
+    tg_chat="$(ask "$(msg "Optional Telegram ChatID" "可选 Telegram ChatID")" "")"
 
     run mkdir -p "${EXIT_CONFIG_DIR}/ssh"
     if [[ "$relay_auth" == "password" ]]; then
@@ -191,6 +249,8 @@ setup_exit_config() {
     fi
     write_json_with_python "${EXIT_CONFIG_DIR}/config.json" "
 data['role'] = 'exit'
+ui = data.setdefault('ui', {})
+ui['language'] = '$INSTALL_LANG'
 data.setdefault('paths', {})['state_db'] = '/var/lib/nft-forward-exit/state.db'
 ssh = data.setdefault('ssh', {})
 ssh['relay_host'] = '$relay_host'
@@ -217,20 +277,21 @@ telegram['admin_ids'] = ([int('$tg_chat')] if '$tg_chat' else [])
 
 configure_exit_nginx() {
     local cfg="${EXIT_CONFIG_DIR}/config.json" domain public_port backend_port cert_choice cert key cert_dir site
+    load_existing_language
     if ((DRY_RUN)); then
-        cert_choice="$(ask "Nginx TLS certificate (reuse/self-signed/skip)" "reuse")"
+        cert_choice="$(ask "$(msg "Nginx TLS certificate (reuse/self-signed/skip)" "Nginx TLS 证书（reuse/self-signed/skip）")" "reuse")"
         echo "[dry-run] configure Nginx TLS mode: ${cert_choice}"
         return 0
     fi
     domain="$(python3 -c "import json;d=json.load(open('$cfg'));print(d.get('phone',{}).get('public_host') or '_')")"
     public_port="$(python3 -c "import json;d=json.load(open('$cfg'));print(d.get('phone',{}).get('public_port',18443))")"
     backend_port="$(python3 -c "import json;d=json.load(open('$cfg'));print(d.get('phone',{}).get('port',18088))")"
-    cert_choice="$(ask "Nginx TLS certificate (reuse/self-signed/skip)" "reuse")"
+    cert_choice="$(ask "$(msg "Nginx TLS certificate (reuse/self-signed/skip)" "Nginx TLS 证书（reuse/self-signed/skip）")" "reuse")"
     cert=""
     key=""
     if [[ "$cert_choice" == "reuse" ]]; then
-        cert="$(ask "Certificate fullchain path" "/root/cert/fullchain.pem")"
-        key="$(ask "Certificate private key path" "/root/cert/privkey.pem")"
+        cert="$(ask "$(msg "Certificate fullchain path" "证书 fullchain 路径")" "/root/cert/fullchain.pem")"
+        key="$(ask "$(msg "Certificate private key path" "证书私钥路径")" "/root/cert/privkey.pem")"
     elif [[ "$cert_choice" == "self-signed" ]]; then
         cert_dir="${EXIT_CONFIG_DIR}/certs/self-signed"
         run mkdir -p "$cert_dir"
@@ -241,7 +302,7 @@ configure_exit_nginx() {
         cert="${cert_dir}/fullchain.pem"
         key="${cert_dir}/privkey.pem"
     else
-        echo "Skipping Nginx TLS config."
+        echo "$(msg "Skipping Nginx TLS config." "跳过 Nginx TLS 配置。")"
         return 0
     fi
     site="/etc/nginx/sites-available/nft-forward-secret-url.conf"
@@ -280,6 +341,8 @@ install_exit() {
     run systemctl daemon-reload
     run systemctl enable --now nft-forward-exit-phone.service
     run systemctl enable --now nft-forward-exit-queue.service
+    run systemctl restart nft-forward-exit-phone.service
+    run systemctl restart nft-forward-exit-queue.service
     if ((DRY_RUN)); then
         echo "[dry-run] enable Telegram only if token is configured"
     elif python3 - <<PY
@@ -289,6 +352,7 @@ raise SystemExit(0 if data.get('telegram',{}).get('token') else 1)
 PY
     then
         run systemctl enable --now nft-forward-exit-telegram.service
+        run systemctl restart nft-forward-exit-telegram.service
     else
         run systemctl disable --now nft-forward-exit-telegram.service || true
     fi
@@ -307,6 +371,8 @@ upgrade_existing() {
     run systemctl daemon-reload
     run systemctl enable --now nft-forward-exit-phone.service
     run systemctl enable --now nft-forward-exit-queue.service
+    run systemctl restart nft-forward-exit-phone.service
+    run systemctl restart nft-forward-exit-queue.service
     if ((DRY_RUN)); then
         echo "[dry-run] enable Telegram only if token is configured"
     elif python3 - <<PY
@@ -316,6 +382,7 @@ raise SystemExit(0 if data.get('telegram',{}).get('token') else 1)
 PY
     then
         run systemctl enable --now nft-forward-exit-telegram.service
+        run systemctl restart nft-forward-exit-telegram.service
     else
         run systemctl disable --now nft-forward-exit-telegram.service || true
     fi
@@ -368,6 +435,7 @@ install_relay_remote() {
 }
 
 uninstall_local() {
+    load_existing_language
     run systemctl disable --now nft-forward-exit-phone.service nft-forward-exit-queue.service nft-forward-exit-telegram.service || true
     run systemctl disable --now nft-forward-blocklog.service nft-forward-sshlog.service nft-forward-ddns.timer || true
     run rm -f /etc/nftables.d/nft-forward-managed.conf
@@ -376,7 +444,7 @@ uninstall_local() {
     fi
     run rm -f /etc/systemd/system/nft-forward-*.service /etc/systemd/system/nft-forward-*.timer
     run systemctl daemon-reload
-    read -rp "Remove config/state/logs too? [y/N]: " remove_data
+    read -rp "$(msg "Remove config/state/logs too? [y/N]: " "同时删除配置/状态/日志吗？[y/N]: ")" remove_data
     if [[ "${remove_data,,}" == "y" ]]; then
         run rm -rf /etc/nft-forward /etc/nft-forward-exit /var/lib/nft-forward /var/lib/nft-forward-exit /var/log/nft-forward /var/log/nft-forward-exit
     fi

@@ -39,6 +39,7 @@ class Paths:
 @dataclass
 class Settings:
     role: str = "relay"
+    language: str = "en"
     mode: str = "regular"
     dynamic_ttl_days: int = DEFAULT_TTL_DAYS
     reserved_ports: set[int] = field(default_factory=lambda: set(RESERVED_PORTS))
@@ -108,8 +109,15 @@ def load_settings(config_path: str | Path | None = None) -> Settings:
     telegram = data.get("telegram", {})
     phone = data.get("phone", {})
     geo = data.get("geo", {})
+    ui = data.get("ui", {})
+    language = str(ui.get("language", data.get("language", "en"))).lower()
+    if language in {"cn", "zh-cn", "zh_hans", "zh-hans", "chinese"}:
+        language = "zh"
+    if language not in {"en", "zh"}:
+        language = "en"
     return Settings(
         role=data.get("role", "relay"),
+        language=language,
         mode=data.get("mode", "regular"),
         dynamic_ttl_days=int(data.get("dynamic_ttl_days", DEFAULT_TTL_DAYS)),
         reserved_ports=set(int(p) for p in data.get("reserved_ports", sorted(RESERVED_PORTS))),
@@ -173,6 +181,7 @@ def write_example_config(path: Path) -> None:
             "timeout": 8,
         },
         "telegram": {"token": "", "admin_ids": [], "timeout": 20},
+        "ui": {"language": "en"},
         "phone": {
             "bind": "127.0.0.1",
             "port": 18088,

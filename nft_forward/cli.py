@@ -21,7 +21,7 @@ from .iputil import normalize_sources
 from .legacy import import_legacy_conf
 from .nft import render_nft, write_and_apply
 from .phone_server import run as run_phone
-from .relay import ingest_source, state_for, status, sync_ddns
+from .relay import bot_status, ingest_source, state_for, status, sync_ddns
 from .sshlog import run as run_sshlog
 from .sshutil import ssh_command
 from .state import State
@@ -194,6 +194,27 @@ def cmd_import_legacy(args: argparse.Namespace) -> int:
 
 def cmd_status(args: argparse.Namespace) -> int:
     print_json(status(load_settings(args.config)))
+    return 0
+
+
+def cmd_bot_status(args: argparse.Namespace) -> int:
+    print_json(bot_status(load_settings(args.config)))
+    return 0
+
+
+def cmd_language(args: argparse.Namespace) -> int:
+    settings = load_settings(args.config)
+    data = read_config_json(settings)
+    ui = data.setdefault("ui", {})
+    if args.language:
+        lang = args.language.lower()
+        if lang in {"cn", "zh-cn", "zh_hans", "zh-hans", "chinese"}:
+            lang = "zh"
+        if lang not in {"en", "zh"}:
+            raise SystemExit("language must be en or zh")
+        ui["language"] = lang
+        write_config_json(settings, data)
+    print(ui.get("language", settings.language))
     return 0
 
 
@@ -709,15 +730,19 @@ def cmd_sync_from_relay(args: argparse.Namespace) -> int:
 
 def cmd_menu(args: argparse.Namespace) -> int:
     settings = load_settings(args.config)
+
+    def tr(en: str, zh: str) -> str:
+        return zh if settings.language == "zh" else en
+
     while True:
-        print("\nNFT Forward Menu")
-        print("1) Status")
-        print("2) Forwarding rules")
-        print("3) Secret URLs")
-        print("4) Attack mode")
-        print("5) Export")
-        print("6) Exit")
-        choice = input("Choose [1-6]: ").strip()
+        print(tr("\nNiftGate Menu", "\nNiftGate 菜单"))
+        print(tr("1) Status", "1) 状态"))
+        print(tr("2) Forwarding rules", "2) 转发规则"))
+        print(tr("3) Secret URLs", "3) Secret URL"))
+        print(tr("4) Attack mode", "4) 攻击模式"))
+        print(tr("5) Export", "5) 导出"))
+        print(tr("6) Exit", "6) 退出"))
+        choice = input(tr("Choose [1-6]: ", "请选择 [1-6]: ")).strip()
         if choice == "1":
             cmd_status(args)
         elif choice == "2":
@@ -728,19 +753,19 @@ def cmd_menu(args: argparse.Namespace) -> int:
                 migrate_secret_path(settings, state)
                 for url in state.secret_urls():
                     print(f"#{url.id} {url.label} ruleset={url.ruleset} hits={url.hit_count} /{url.secret_path}")
-                sub = input("Secret URL action: [c]reate, [d]elete, [enter] back: ").strip().lower()
+                sub = input(tr("Secret URL action: [c]reate, [d]elete, [enter] back: ", "Secret URL 操作：[c]创建，[d]删除，[回车]返回：")).strip().lower()
                 if sub == "c":
-                    ruleset = input("Ruleset [public]: ").strip() or DEFAULT_RULESET
-                    label = input("Label [auto]: ").strip()
+                    ruleset = input(tr("Ruleset [public]: ", "规则集 [public]: ")).strip() or DEFAULT_RULESET
+                    label = input(tr("Label [auto]: ", "标签 [自动]: ")).strip()
                     url = state.create_secret_url(secrets.token_urlsafe(48), ruleset=ruleset, label=label)
                     print_json(secret_url_dict(url, include_secrets=True, settings=settings))
                 elif sub == "d":
-                    ids = [int(x) for x in input("IDs to delete, separated by spaces: ").split()]
-                    print(f"deleted: {state.delete_secret_urls(ids)}")
+                    ids = [int(x) for x in input(tr("IDs to delete, separated by spaces: ", "要删除的 ID，用空格分隔：")).split()]
+                    print(tr("deleted: ", "已删除：") + str(state.delete_secret_urls(ids)))
             finally:
                 state.close()
         elif choice == "4":
-            mode = input("Mode [regular/attack]: ").strip()
+            mode = input(tr("Mode [regular/attack]: ", "模式 [regular/attack]: ")).strip()
             if mode in {"regular", "attack"}:
                 args.mode = mode
                 cmd_mode(args)
@@ -770,6 +795,13 @@ def build_parser() -> argparse.ArgumentParser:
 
     p = sub.add_parser("status")
     p.set_defaults(func=cmd_status)
+
+    p = sub.add_parser("bot-status", help=argparse.SUPPRESS)
+    p.set_defaults(func=cmd_bot_status)
+
+    p = sub.add_parser("language")
+    p.add_argument("language", nargs="?", choices=["en", "zh", "cn", "zh-cn"])
+    p.set_defaults(func=cmd_language)
 
     p = sub.add_parser("mode")
     p.add_argument("mode", nargs="?", choices=["regular", "attack"])

@@ -13,6 +13,10 @@ def settings() -> Settings:
     return Settings(paths=default_paths(Path(".tmp-telegram-tests")))
 
 
+def zh_settings() -> Settings:
+    return Settings(paths=default_paths(Path(".tmp-telegram-tests")), language="zh")
+
+
 class TelegramBotTests(unittest.TestCase):
     def setUp(self) -> None:
         telegram_bot.PENDING_ACTIONS.clear()
@@ -20,6 +24,8 @@ class TelegramBotTests(unittest.TestCase):
     def fake_relay(self, calls: list[list[str]]):
         def _fake(_settings: Settings, args: list[str]) -> tuple[bool, str]:
             calls.append(args)
+            if args == ["bot-status"]:
+                return True, json.dumps({"mode": "regular", "allow": 2, "rules": 1, "rulesets": 1, "blocked": 1})
             if args == ["status"]:
                 return True, json.dumps({"mode": "regular", "active_allow_entries": 2, "rules": 1, "blocked_visible": 1})
             if args == ["allow-list"]:
@@ -150,15 +156,30 @@ class TelegramBotTests(unittest.TestCase):
         self.assertIn("Forwarding Rules (1)", labels)
         self.assertIn("Custom Rule Sets (1)", labels)
         self.assertIn("Blocked IPs (1)", labels)
+        self.assertEqual(calls, [["bot-status"]])
 
     def test_status_menu_shows_timeout(self) -> None:
+        calls: list[list[str]] = []
+
         def timeout_relay(_settings: Settings, args: list[str]) -> tuple[bool, str]:
-            self.assertEqual(args, ["status"])
+            calls.append(args)
             return False, "ssh timeout"
 
         with patch.object(telegram_bot, "relay_args", timeout_relay):
             text, _markup = telegram_bot.render_status_menu(settings())
         self.assertIn("Relay SSH: timeout after", text)
+        self.assertEqual(calls, [["bot-status"], ["status"]])
+
+    def test_chinese_menu_labels(self) -> None:
+        calls: list[list[str]] = []
+        with patch.object(telegram_bot, "relay_args", self.fake_relay(calls)):
+            text, markup = telegram_bot.render_status_menu(zh_settings())
+        self.assertIn("当前模式：regular", text)
+        labels = [button["text"] for row in markup["inline_keyboard"] for button in row]
+        self.assertIn("白名单 IP (2)", labels)
+        self.assertIn("转发规则 (1)", labels)
+        self.assertIn("自定义规则集 (1)", labels)
+        self.assertIn("拦截 IP (1)", labels)
 
     def test_log_uses_most_recent_whitelist_entry(self) -> None:
         calls: list[list[str]] = []

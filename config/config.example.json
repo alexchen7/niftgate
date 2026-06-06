@@ -31,6 +31,9 @@
     "admin_ids": [],
     "timeout": 20
   },
+  "ui": {
+    "language": "en"
+  },
   "phone": {
     "bind": "127.0.0.1",
     "port": 18088,

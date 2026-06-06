@@ -136,3 +136,18 @@ def status(settings: Settings) -> dict[str, object]:
         }
     finally:
         state.close()
+
+
+def bot_status(settings: Settings) -> dict[str, object]:
+    state = state_for(settings)
+    try:
+        rulesets = [row for row in state.rulesets() if row["name"] != DEFAULT_RULESET]
+        return {
+            "mode": state.mode(),
+            "allow": len(state.active_allow_entries()),
+            "rules": len(state.rules()),
+            "rulesets": len(rulesets),
+            "blocked": len(state.blocked(limit=1000)),
+        }
+    finally:
+        state.close()
