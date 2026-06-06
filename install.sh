@@ -399,7 +399,7 @@ ssh_prefix() {
 }
 
 install_relay_remote() {
-    local cfg="${EXIT_CONFIG_DIR}/config.json" host user port auth key passfile tmp
+    local cfg="${EXIT_CONFIG_DIR}/config.json" host user port auth key passfile tmp local_pkg remote_dir verify_out
     if ((DRY_RUN)); then
         echo "[dry-run] package project and install relay over SSH using the configured relay intranet address"
         return 0
@@ -410,15 +410,65 @@ install_relay_remote() {
     auth="$(python3 -c "import json;d=json.load(open('$cfg'));print(d['ssh'].get('relay_auth_method','key'))")"
     key="$(python3 -c "import json;d=json.load(open('$cfg'));print(d['ssh'].get('relay_key',''))")"
     passfile="$(python3 -c "import json;d=json.load(open('$cfg'));print(d['ssh'].get('relay_password_file',''))")"
-    tmp="/tmp/nft-forward-install.tgz"
-    run tar -czf /tmp/nft-forward-install.tgz -C "${PROJECT_DIR}" .
-    if [[ "$auth" == "password" ]]; then
-        sshpass -f "$passfile" scp -P "$port" /tmp/nft-forward-install.tgz "${user}@${host}:${tmp}"
-        sshpass -f "$passfile" ssh -o BatchMode=no -o ConnectTimeout=8 -p "$port" "${user}@${host}" "mkdir -p /tmp/nft-forward-install && tar -xzf ${tmp} -C /tmp/nft-forward-install && bash /tmp/nft-forward-install/scripts/init_relay.sh"
-    else
-        scp -i "$key" -P "$port" /tmp/nft-forward-install.tgz "${user}@${host}:${tmp}"
-        ssh -i "$key" -o BatchMode=yes -o ConnectTimeout=8 -p "$port" "${user}@${host}" "mkdir -p /tmp/nft-forward-install && tar -xzf ${tmp} -C /tmp/nft-forward-install && bash /tmp/nft-forward-install/scripts/init_relay.sh"
+
+    if [[ -z "$host" || -z "$user" || -z "$port" ]]; then
+        echo "Relay SSH settings are incomplete; cannot install relay side." >&2
+        exit 1
     fi
+    if [[ "$auth" == "password" ]]; then
+        if [[ -z "$passfile" || ! -f "$passfile" ]]; then
+            echo "Relay password auth is selected, but the relay password file is missing: ${passfile}" >&2
+            exit 1
+        fi
+        if ! command -v sshpass >/dev/null 2>&1; then
+            if command -v apt-get >/dev/null 2>&1; then
+                apt_install sshpass
+            else
+                echo "sshpass is required for relay password auth but is not installed." >&2
+                exit 1
+            fi
+        fi
+    elif [[ "$auth" == "key" ]]; then
+        if [[ -z "$key" || ! -f "$key" ]]; then
+            echo "Relay key auth is selected, but the relay key file is missing: ${key}" >&2
+            exit 1
+        fi
+    else
+        echo "Unknown relay SSH auth method: ${auth}" >&2
+        exit 1
+    fi
+
+    echo "Installing relay side on ${user}@${host}:${port}..."
+    local_pkg="$(mktemp /tmp/niftgate-relay.XXXXXX.tgz)"
+    tmp="/tmp/niftgate-relay-install.tgz"
+    remote_dir="/tmp/niftgate-relay-install"
+    tar -czf "$local_pkg" -C "${PROJECT_DIR}" .
+
+    if [[ "$auth" == "password" ]]; then
+        sshpass -f "$passfile" scp -o StrictHostKeyChecking=accept-new -o ConnectTimeout=8 -P "$port" "$local_pkg" "${user}@${host}:${tmp}"
+        sshpass -f "$passfile" ssh -o BatchMode=no -o StrictHostKeyChecking=accept-new -o ConnectTimeout=8 -p "$port" "${user}@${host}" \
+            "rm -rf ${remote_dir} && mkdir -p ${remote_dir} && tar -xzf ${tmp} -C ${remote_dir} && bash ${remote_dir}/scripts/init_relay.sh"
+    else
+        scp -i "$key" -o StrictHostKeyChecking=accept-new -o ConnectTimeout=8 -P "$port" "$local_pkg" "${user}@${host}:${tmp}"
+        ssh -i "$key" -o BatchMode=yes -o StrictHostKeyChecking=accept-new -o ConnectTimeout=8 -p "$port" "${user}@${host}" \
+            "rm -rf ${remote_dir} && mkdir -p ${remote_dir} && tar -xzf ${tmp} -C ${remote_dir} && bash ${remote_dir}/scripts/init_relay.sh"
+    fi
+    rm -f "$local_pkg"
+
+    if [[ "$auth" == "password" ]]; then
+        if ! verify_out="$(sshpass -f "$passfile" ssh -o BatchMode=no -o StrictHostKeyChecking=accept-new -o ConnectTimeout=8 -p "$port" "${user}@${host}" "/usr/local/bin/nft.sh bot-status" 2>&1)"; then
+            echo "Relay installation verification failed. The relay did not return bot-status:" >&2
+            echo "$verify_out" >&2
+            exit 1
+        fi
+    else
+        if ! verify_out="$(ssh -i "$key" -o BatchMode=yes -o StrictHostKeyChecking=accept-new -o ConnectTimeout=8 -p "$port" "${user}@${host}" "/usr/local/bin/nft.sh bot-status" 2>&1)"; then
+            echo "Relay installation verification failed. The relay did not return bot-status:" >&2
+            echo "$verify_out" >&2
+            exit 1
+        fi
+    fi
+    echo "Relay installation verified: ${verify_out}"
 
     local secret_path secret_b64 remote_secret_cmd
     secret_path="$(python3 -c "import json;d=json.load(open('$cfg'));print(d.get('phone',{}).get('secret_path',''))")"

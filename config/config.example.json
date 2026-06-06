@@ -47,10 +47,5 @@
     "fallback_url": "https://ipwho.is/{ip}"
   },
   "ddns_timeout": 5,
-  "ddns": [
-    {
-      "host": "home.example.com",
-      "ruleset": "public"
-    }
-  ]
+  "ddns": []
 }
