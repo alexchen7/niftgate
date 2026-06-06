@@ -181,6 +181,11 @@ class TelegramBotTests(unittest.TestCase):
         self.assertIn("自定义规则集 (1)", labels)
         self.assertIn("拦截 IP (1)", labels)
 
+    def test_menu_command_does_not_shadow_translator(self) -> None:
+        text, markup = telegram_bot.handle_message(zh_settings(), 569088547, "/menu")
+        self.assertEqual(text, "NiftGate 菜单")
+        self.assertTrue(markup)
+
     def test_log_uses_most_recent_whitelist_entry(self) -> None:
         calls: list[list[str]] = []
         with patch.object(telegram_bot, "relay_args", self.fake_relay(calls)):

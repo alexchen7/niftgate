@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import shlex
 import time
+import traceback
 import urllib.parse
 import urllib.request
 from typing import Any
@@ -78,7 +79,7 @@ def send(settings: Settings, chat_id: int, text: str, reply_markup: dict[str, An
             payload["reply_markup"] = reply_markup
         api(settings, "sendMessage", payload)
     except Exception:
-        pass
+        traceback.print_exc()
 
 
 def edit(settings: Settings, chat_id: int, message_id: int, text: str, reply_markup: dict[str, Any] | None = None) -> None:
@@ -88,6 +89,7 @@ def edit(settings: Settings, chat_id: int, message_id: int, text: str, reply_mar
             payload["reply_markup"] = reply_markup
         api(settings, "editMessageText", payload)
     except Exception:
+        traceback.print_exc()
         send(settings, chat_id, text, reply_markup)
 
 
@@ -98,7 +100,7 @@ def answer_callback(settings: Settings, callback_id: str, text: str = "") -> Non
             payload["text"] = text
         api(settings, "answerCallbackQuery", payload)
     except Exception:
-        pass
+        traceback.print_exc()
 
 
 def authorized(settings: Settings, chat_id: int) -> bool:
@@ -819,12 +821,12 @@ def handle_callback_for_chat(settings: Settings, chat_id: int, data: str) -> tup
     return handle_callback(settings, data)
 
 
-def handle_message(settings: Settings, chat_id: int, text: str) -> tuple[str, dict[str, Any] | None]:
-    if chat_id in PENDING_ACTIONS and not text.startswith("/"):
-        return handle_pending(settings, chat_id, text)
-    if text.strip().lower() in {"/start", "/help", "/menu"}:
+def handle_message(settings: Settings, chat_id: int, message_text: str) -> tuple[str, dict[str, Any] | None]:
+    if chat_id in PENDING_ACTIONS and not message_text.startswith("/"):
+        return handle_pending(settings, chat_id, message_text)
+    if message_text.strip().lower() in {"/start", "/help", "/menu"}:
         return text(settings, "NiftGate menu", "NiftGate 菜单"), main_menu_keyboard(settings)
-    return handle_command(settings, text), None
+    return handle_command(settings, message_text), None
 
 
 def run() -> None:
@@ -862,5 +864,6 @@ def run() -> None:
                     send(settings, chat_id, reply, markup)
             backoff = 2
         except Exception:
+            traceback.print_exc()
             time.sleep(backoff)
             backoff = min(backoff * 2, 60)
