@@ -57,6 +57,23 @@ class TelegramBotTests(unittest.TestCase):
                         },
                     ]
                 )
+            if args == ["allow-list", "--channel", "manual"]:
+                return True, json.dumps(
+                    [
+                        {
+                            "id": 2,
+                            "ruleset": "ddns",
+                            "source": "203.0.113.10/32",
+                            "channel": "manual",
+                            "prefix_len": 32,
+                            "geo": "Example B",
+                            "isp": "ISP B",
+                            "created_at": 300,
+                            "expires_at": None,
+                            "note": "new",
+                        }
+                    ]
+                )
             if args == ["list"]:
                 return True, json.dumps(
                     [
@@ -141,6 +158,21 @@ class TelegramBotTests(unittest.TestCase):
                 return True, "ddns entries updated: 1"
             if args and args[0] == "add-rule":
                 return True, "rule upserted"
+            if args and args[0] == "edit-rule":
+                return True, json.dumps(
+                    {
+                        "lport": 58495,
+                        "target": "203.0.113.20:58495",
+                        "note": "edited",
+                        "rulesets": ["ddns"] if "--ruleset" in args else [],
+                        "include_public": "--no-public" not in args,
+                        "open_access": "--open" in args,
+                    }
+                )
+            if args and args[0] == "allow":
+                return True, "allowed entries upserted: 1"
+            if args and args[0] == "remove-allow":
+                return True, "removed"
             return False, "unexpected command"
 
         return _fake
@@ -236,6 +268,43 @@ class TelegramBotTests(unittest.TestCase):
         self.assertIn(["ddns", "add", "home.example.com", "--ruleset", "public"], calls)
         self.assertIn(["ddns", "delete", "1", "--keep-allowlist"], calls)
         self.assertIn(["ddns", "delete", "1"], calls)
+
+    def test_ruleset_source_menu_adds_and_removes_manual_sources(self) -> None:
+        calls: list[list[str]] = []
+        with patch.object(telegram_bot, "relay_args", self.fake_relay(calls)):
+            text, _markup = telegram_bot.handle_callback_for_chat(settings(), 123, "sources:add_ruleset:ddns")
+            self.assertIn("Rule set: ddns", text)
+            text, _markup = telegram_bot.handle_message(settings(), 123, "203.0.113.10 home phone")
+            self.assertEqual(text, "allowed entries upserted: 1")
+            text, _markup = telegram_bot.handle_callback_for_chat(settings(), 123, "sources:remove")
+            self.assertIn("Remove Sources", text)
+            telegram_bot.handle_callback_for_chat(settings(), 123, "sources:toggle:2")
+            text, _markup = telegram_bot.handle_callback_for_chat(settings(), 123, "sources:delete_selected")
+            self.assertIn("removed", text)
+        self.assertIn(["allow", "203.0.113.10", "--ruleset", "ddns", "--channel", "manual", "--note", "home phone"], calls)
+        self.assertIn(["remove-allow", "2"], calls)
+
+    def test_edit_rule_buttons_update_access_public_rulesets_and_note(self) -> None:
+        calls: list[list[str]] = []
+        with patch.object(telegram_bot, "relay_args", self.fake_relay(calls)):
+            text, markup = telegram_bot.handle_callback_for_chat(settings(), 123, "manage:edit_rule")
+            self.assertIn("Choose a rule", text)
+            self.assertIn("58495", str(markup))
+            text, _markup = telegram_bot.handle_callback_for_chat(settings(), 123, "edit_rule:select:58495")
+            self.assertIn("Edit Forwarding Rule", text)
+            telegram_bot.handle_callback_for_chat(settings(), 123, "edit_rule:access:58495:open")
+            telegram_bot.handle_callback_for_chat(settings(), 123, "edit_rule:public:58495:toggle")
+            telegram_bot.handle_callback_for_chat(settings(), 123, "edit_rule:rulesets:58495")
+            telegram_bot.handle_callback_for_chat(settings(), 123, "edit_rule:ruleset_toggle:58495:ddns")
+            telegram_bot.handle_callback_for_chat(settings(), 123, "edit_rule:ruleset_save:58495")
+            telegram_bot.handle_callback_for_chat(settings(), 123, "edit_rule:note_clear:58495")
+            telegram_bot.handle_callback_for_chat(settings(), 123, "edit_rule:note:58495")
+            telegram_bot.handle_message(settings(), 123, "new note")
+        self.assertIn(["edit-rule", "58495", "--open"], calls)
+        self.assertIn(["edit-rule", "58495", "--no-public"], calls)
+        self.assertIn(["edit-rule", "58495", "--clear-rulesets", "--ruleset", "ddns"], calls)
+        self.assertIn(["edit-rule", "58495", "--clear-note"], calls)
+        self.assertIn(["edit-rule", "58495", "--note", "new note"], calls)
 
 
 if __name__ == "__main__":

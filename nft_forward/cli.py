@@ -306,6 +306,50 @@ def cmd_delete_rule(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_edit_rule(args: argparse.Namespace) -> int:
+    settings = load_settings(args.config)
+    state = state_for(settings)
+    try:
+        rule = state.rule_by_lport(args.lport)
+        if not rule:
+            raise SystemExit(f"rule not found: {args.lport}")
+        rulesets = rule.rulesets
+        if args.clear_rulesets:
+            rulesets = []
+        if args.ruleset is not None:
+            rulesets = args.ruleset
+        note = rule.note
+        if args.clear_note:
+            note = ""
+        elif args.note is not None:
+            note = args.note
+        state.add_rule(
+            rule.lport,
+            args.dest_ip or rule.dest_ip,
+            args.dest_port or rule.dest_port,
+            note=note,
+            rulesets=rulesets,
+            include_public=rule.include_public if args.include_public is None else args.include_public,
+            open_access=rule.open_access if args.open_access is None else args.open_access,
+        )
+        if args.apply:
+            write_and_apply(settings, state, apply=True)
+        updated = state.rule_by_lport(args.lport)
+        print_json(
+            {
+                "lport": updated.lport if updated else args.lport,
+                "target": f"{updated.dest_ip}:{updated.dest_port}" if updated else "",
+                "note": updated.note if updated else "",
+                "rulesets": updated.rulesets if updated else [],
+                "include_public": updated.include_public if updated else False,
+                "open_access": updated.open_access if updated else False,
+            }
+        )
+    finally:
+        state.close()
+    return 0
+
+
 def cmd_allow(args: argparse.Namespace) -> int:
     settings = load_settings(args.config)
     state = state_for(settings)
@@ -336,7 +380,17 @@ def cmd_remove_allow(args: argparse.Namespace) -> int:
     settings = load_settings(args.config)
     state = state_for(settings)
     try:
-        ok = state.remove_allow(int(args.id))
+        token = str(args.id_or_source)
+        if args.ruleset or not token.isdigit():
+            ruleset = args.ruleset or DEFAULT_RULESET
+            policy = int(args.prefix) if args.prefix else state.ruleset_prefix(ruleset, "manual")
+            sources = [spec.text for spec in normalize_sources(token, host_policy=policy)]
+            count = state.remove_allow_sources(ruleset, sources, channel=args.channel)
+            if args.apply:
+                write_and_apply(settings, state, apply=True)
+            print(f"removed entries: {count}")
+            return 0
+        ok = state.remove_allow(int(token))
         if args.apply:
             write_and_apply(settings, state, apply=True)
         print("removed" if ok else "not found")
@@ -349,6 +403,11 @@ def cmd_allow_list(args: argparse.Namespace) -> int:
     settings = load_settings(args.config)
     state = state_for(settings)
     try:
+        entries = state.all_allow_entries()
+        if args.ruleset:
+            entries = [e for e in entries if e.ruleset == args.ruleset]
+        if args.channel:
+            entries = [e for e in entries if e.channel == args.channel]
         rows = [
             {
                 "id": e.id,
@@ -362,7 +421,7 @@ def cmd_allow_list(args: argparse.Namespace) -> int:
                 "expires_at": e.expires_at,
                 "note": e.note,
             }
-            for e in state.all_allow_entries()
+            for e in entries
         ]
         print_json(rows)
     finally:
@@ -840,6 +899,26 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--no-apply", dest="apply", action="store_false", default=True)
     p.set_defaults(func=cmd_delete_rule)
 
+    p = sub.add_parser("edit-rule")
+    p.add_argument("lport", type=int)
+    p.add_argument("--dest-ip")
+    p.add_argument("--dest-port", type=int)
+    note_group = p.add_mutually_exclusive_group()
+    note_group.add_argument("--note")
+    note_group.add_argument("--clear-note", action="store_true")
+    p.add_argument("--ruleset", action="append", help="replace custom rulesets; repeat for multiple")
+    p.add_argument("--clear-rulesets", action="store_true")
+    public_group = p.add_mutually_exclusive_group()
+    public_group.add_argument("--public", dest="include_public", action="store_true", help="include the public ruleset")
+    public_group.add_argument("--no-public", dest="include_public", action="store_false", help="do not include the public ruleset")
+    public_group.set_defaults(include_public=None)
+    access_group = p.add_mutually_exclusive_group()
+    access_group.add_argument("--open", dest="open_access", action="store_true", help="allow all sources for this forwarding rule")
+    access_group.add_argument("--restricted", dest="open_access", action="store_false", help="restrict this rule to its rule sets")
+    access_group.set_defaults(open_access=None)
+    p.add_argument("--no-apply", dest="apply", action="store_false", default=True)
+    p.set_defaults(func=cmd_edit_rule)
+
     p = sub.add_parser("allow")
     p.add_argument("source")
     p.add_argument("--ruleset", default=DEFAULT_RULESET)
@@ -850,6 +929,8 @@ def build_parser() -> argparse.ArgumentParser:
     p.set_defaults(func=cmd_allow)
 
     p = sub.add_parser("allow-list")
+    p.add_argument("--ruleset")
+    p.add_argument("--channel", choices=["manual", "ssh_login", "ddns", "web"])
     p.set_defaults(func=cmd_allow_list)
 
     p = sub.add_parser("ingest")
@@ -861,7 +942,10 @@ def build_parser() -> argparse.ArgumentParser:
     p.set_defaults(func=cmd_ingest)
 
     p = sub.add_parser("remove-allow")
-    p.add_argument("id")
+    p.add_argument("id_or_source", help="allow entry id, or a source when --ruleset is supplied")
+    p.add_argument("--ruleset", help="remove source from this ruleset instead of deleting by id")
+    p.add_argument("--channel", choices=["manual", "ssh_login", "ddns", "web"], help="optional channel filter for source removal")
+    p.add_argument("--prefix", choices=["24", "32"], help="host normalization when removing an IP source")
     p.add_argument("--no-apply", dest="apply", action="store_false", default=True)
     p.set_defaults(func=cmd_remove_allow)
 

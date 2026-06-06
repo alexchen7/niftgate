@@ -28,8 +28,22 @@ LABELS = {
     "add_rule": ("Add Forwarding Rule", "新增转发规则"),
     "remove_rule": ("Remove Forwarding Rule", "删除转发规则"),
     "change_rulesets": ("Change Rule Sets", "修改规则集"),
+    "edit_rule": ("Edit Forwarding Rule", "编辑转发规则"),
+    "ruleset_sources": ("Rule Set Sources", "规则集来源"),
     "secret_url": ("Secret URL", "Secret URL"),
     "ddns": ("DDNS", "DDNS"),
+    "view_sources": ("View Sources", "查看来源"),
+    "add_source": ("Add Source", "添加来源"),
+    "remove_source": ("Remove Source", "删除来源"),
+    "access_open": ("Open to All", "对所有来源开放"),
+    "access_restricted": ("Restricted", "限制来源"),
+    "public_on": ("Public Set: ON", "公共规则集：开"),
+    "public_off": ("Public Set: OFF", "公共规则集：关"),
+    "custom_sets": ("Custom Sets", "自定义规则集"),
+    "edit_note": ("Edit Note", "编辑备注"),
+    "clear_note": ("Clear Note", "清空备注"),
+    "save": ("Save", "保存"),
+    "delete_selected": ("Delete Selected", "删除所选"),
     "view_urls": ("View Active URLs", "查看启用 URL"),
     "generate_url": ("Generate URL", "生成 URL"),
     "delete_urls": ("Delete URLs", "删除 URL"),
@@ -148,6 +162,8 @@ def manage_keyboard(settings: Settings | None = None) -> dict[str, Any]:
             [(label(settings, "add_rule"), "manage:add_rule")],
             [(label(settings, "remove_rule"), "manage:remove_rule")],
             [(label(settings, "change_rulesets"), "manage:change_rulesets")],
+            [(label(settings, "edit_rule"), "manage:edit_rule")],
+            [(label(settings, "ruleset_sources"), "manage:ruleset_sources")],
             [(label(settings, "secret_url"), "manage:secret_url")],
             [(label(settings, "ddns"), "manage:ddns")],
             [(label(settings, "back"), "menu:main")],
@@ -173,6 +189,17 @@ def ddns_keyboard(settings: Settings | None = None) -> dict[str, Any]:
             [(label(settings, "add_record"), "ddns:add")],
             [(label(settings, "delete_records"), "ddns:delete")],
             [(label(settings, "refresh_now"), "ddns:refresh")],
+            [(label(settings, "back"), "menu:manage")],
+        ]
+    )
+
+
+def ruleset_sources_keyboard(settings: Settings | None = None) -> dict[str, Any]:
+    return keyboard(
+        [
+            [(label(settings, "view_sources"), "sources:list")],
+            [(label(settings, "add_source"), "sources:add")],
+            [(label(settings, "remove_source"), "sources:remove")],
             [(label(settings, "back"), "menu:manage")],
         ]
     )
@@ -504,6 +531,122 @@ def render_ddns_delete(settings: Settings, chat_id: int) -> tuple[str, dict[str,
     ), keyboard(button_rows)
 
 
+def render_ruleset_sources_menu(settings: Settings) -> tuple[str, dict[str, Any]]:
+    return text(
+        settings,
+        "Rule Set Sources\nManually add or remove IPs, CIDRs, or IP ranges from a rule set.",
+        "规则集来源\n手动向规则集添加或删除 IP、CIDR 或 IP 范围。",
+    ), ruleset_sources_keyboard(settings)
+
+
+def render_sources_list(settings: Settings) -> tuple[str, dict[str, Any]]:
+    ok, rows, out = relay_json(settings, ["allow-list", "--channel", "manual"], [])
+    if not ok:
+        return text(settings, f"Rule Set Sources\nrelay error: {out}", f"规则集来源\n中继错误：{out}"), ruleset_sources_keyboard(settings)
+    body = "\n\n".join(format_source(settings, row) for row in rows[:30]) or text(settings, "No manually added sources.", "没有手动添加的来源。")
+    return text(settings, f"Manual Rule Set Sources ({len(rows)})\n\n{body}", f"手动规则集来源（{len(rows)}）\n\n{body}"), ruleset_sources_keyboard(settings)
+
+
+def render_sources_add(settings: Settings) -> tuple[str, dict[str, Any]]:
+    rows = [[(name, f"sources:add_ruleset:{name}")] for name in ruleset_names(settings)[:20]]
+    rows.append([(label(settings, "back"), "manage:ruleset_sources")])
+    return text(settings, "Add Source\nChoose the target rule set.", "添加来源\n请选择目标规则集。"), keyboard(rows)
+
+
+def render_sources_remove(settings: Settings, chat_id: int) -> tuple[str, dict[str, Any]]:
+    ok, rows, out = relay_json(settings, ["allow-list", "--channel", "manual"], [])
+    if not ok:
+        return text(settings, f"Remove Sources\nrelay error: {out}", f"删除来源\n中继错误：{out}"), ruleset_sources_keyboard(settings)
+    selected = set()
+    pending = PENDING_ACTIONS.get(chat_id)
+    if pending and pending.get("action") == "source_remove":
+        selected = {int(x) for x in pending.get("selected", "").split(",") if x}
+    PENDING_ACTIONS[chat_id] = {"action": "source_remove", "selected": ",".join(str(x) for x in sorted(selected))}
+    button_rows: list[list[tuple[str, str]]] = []
+    for row in rows[:30]:
+        rid = int(row["id"])
+        mark = "[x]" if rid in selected else "[ ]"
+        button_rows.append([(f"{mark} #{rid} {row.get('source')} ({row.get('ruleset')})", f"sources:toggle:{rid}")])
+    button_rows.append([(label(settings, "delete_selected"), "sources:delete_selected"), (label(settings, "clear"), "sources:clear_delete")])
+    button_rows.append([(label(settings, "back"), "manage:ruleset_sources")])
+    return text(
+        settings,
+        "Remove Sources\nSelect manually added sources, then delete selected.",
+        "删除来源\n请选择手动添加的来源，然后删除所选。",
+    ), keyboard(button_rows)
+
+
+def render_edit_rule_list(settings: Settings) -> tuple[str, dict[str, Any]]:
+    ok, rows, out = relay_json(settings, ["list"], [])
+    if not ok:
+        return text(settings, f"Edit Forwarding Rule\nrelay error: {out}", f"编辑转发规则\n中继错误：{out}"), manage_keyboard(settings)
+    button_rows = [
+        [(f"{row.get('lport')} -> {row.get('target')}", f"edit_rule:select:{row.get('lport')}")]
+        for row in rows[:30]
+    ]
+    if not button_rows:
+        button_rows.append([(text(settings, "No forwarding rules", "没有转发规则"), "menu:manage")])
+    button_rows.append([(label(settings, "back"), "menu:manage")])
+    return text(settings, "Edit Forwarding Rule\nChoose a rule.", "编辑转发规则\n请选择规则。"), keyboard(button_rows)
+
+
+def render_edit_rule_detail(settings: Settings, lport: int) -> tuple[str, dict[str, Any]]:
+    rule, err = rule_by_lport(settings, lport)
+    if not rule:
+        return text(settings, f"Edit Forwarding Rule\nrelay error: {err}", f"编辑转发规则\n中继错误：{err}"), manage_keyboard(settings)
+    source_count = len(rule.get("effective_sources") or [])
+    custom = ",".join(rule.get("rulesets") or []) or "none"
+    access = text(settings, "open to all", "对所有来源开放") if rule.get("open_access") else text(settings, f"restricted ({source_count} sources)", f"限制来源（{source_count} 个来源）")
+    public = text(settings, "on", "开") if rule.get("include_public") else text(settings, "off", "关")
+    body = text(
+        settings,
+        f"Edit Forwarding Rule\n{rule.get('lport')} -> {rule.get('target')}\n"
+        f"Access: {access}\nPublic set: {public}\nCustom sets: {custom}\nNote: {one_line(rule.get('note'))}",
+        f"编辑转发规则\n{rule.get('lport')} -> {rule.get('target')}\n"
+        f"访问：{access}\n公共规则集：{public}\n自定义规则集：{custom}\n备注：{one_line(rule.get('note'))}",
+    )
+    open_mark = "[x]" if rule.get("open_access") else "[ ]"
+    restricted_mark = "[ ]" if rule.get("open_access") else "[x]"
+    public_label = label(settings, "public_on") if rule.get("include_public") else label(settings, "public_off")
+    button_rows = [
+        [
+            (f"{open_mark} {label(settings, 'access_open')}", f"edit_rule:access:{lport}:open"),
+            (f"{restricted_mark} {label(settings, 'access_restricted')}", f"edit_rule:access:{lport}:restricted"),
+        ],
+        [(public_label, f"edit_rule:public:{lport}:toggle")],
+        [(label(settings, "custom_sets"), f"edit_rule:rulesets:{lport}")],
+        [(label(settings, "edit_note"), f"edit_rule:note:{lport}"), (label(settings, "clear_note"), f"edit_rule:note_clear:{lport}")],
+        [(label(settings, "back"), "manage:edit_rule")],
+    ]
+    return body, keyboard(button_rows)
+
+
+def render_edit_rule_rulesets(settings: Settings, chat_id: int, lport: int) -> tuple[str, dict[str, Any]]:
+    rule, err = rule_by_lport(settings, lport)
+    if not rule:
+        return text(settings, f"Custom Sets\nrelay error: {err}", f"自定义规则集\n中继错误：{err}"), manage_keyboard(settings)
+    pending = PENDING_ACTIONS.get(chat_id)
+    if pending and pending.get("action") == "edit_rule_rulesets" and pending.get("lport") == str(lport):
+        selected = {x for x in pending.get("selected", "").split(",") if x}
+    else:
+        selected = set(rule.get("rulesets") or [])
+    PENDING_ACTIONS[chat_id] = {
+        "action": "edit_rule_rulesets",
+        "lport": str(lport),
+        "selected": ",".join(sorted(selected)),
+    }
+    names = [name for name in ruleset_names(settings) if name != "public"]
+    button_rows: list[list[tuple[str, str]]] = []
+    for name in names[:30]:
+        mark = "[x]" if name in selected else "[ ]"
+        button_rows.append([(f"{mark} {name}", f"edit_rule:ruleset_toggle:{lport}:{name}")])
+    if not button_rows:
+        button_rows.append([(text(settings, "No custom rule sets", "没有自定义规则集"), f"edit_rule:select:{lport}")])
+    button_rows.append([(label(settings, "save"), f"edit_rule:ruleset_save:{lport}"), (label(settings, "clear"), f"edit_rule:ruleset_clear:{lport}")])
+    button_rows.append([(label(settings, "back"), f"edit_rule:select:{lport}")])
+    return text(settings, "Custom Sets\nSelect one or more custom rule sets, then save.", "自定义规则集\n请选择一个或多个自定义规则集，然后保存。"), keyboard(button_rows)
+
+
 def render_attack(settings: Settings) -> tuple[str, dict[str, Any]]:
     ok, out = relay_text(settings, ["mode"])
     mode = out.strip() if ok else "unknown"
@@ -656,6 +799,29 @@ def handle_pending(settings: Settings, chat_id: int, message_text: str) -> tuple
         refresh_ok, refresh_out = relay_text(settings, ["sync-ddns"])
         suffix = text(settings, f"\n\nRefresh: {refresh_out}", f"\n\n刷新：{refresh_out}") if refresh_ok else text(settings, f"\n\nRefresh failed: {refresh_out}", f"\n\n刷新失败：{refresh_out}")
         return text(settings, f"DDNS record added\n{out}{suffix}", f"DDNS 记录已添加\n{out}{suffix}"), ddns_keyboard(settings)
+    if action == "source_add":
+        if len(parts) < 1:
+            return text(
+                settings,
+                "Add Source\nSend one line:\nIP/CIDR/range [note]",
+                "添加来源\n发送一行：\nIP/CIDR/范围 [备注]",
+            ), ruleset_sources_keyboard(settings)
+        ruleset = pending.get("ruleset") or "public"
+        args = ["allow", parts[0], "--ruleset", ruleset, "--channel", "manual"]
+        if len(parts) > 1:
+            args += ["--note", " ".join(parts[1:])]
+        ok, out = relay_text(settings, args)
+        return (out if ok else text(settings, f"relay error: {out}", f"中继错误：{out}")), ruleset_sources_keyboard(settings)
+    if action == "edit_rule_note":
+        lport = pending.get("lport") or ""
+        note = message_text.strip()
+        ok, out = relay_text(settings, ["edit-rule", lport, "--clear-note"] if note in {"-", "clear"} else ["edit-rule", lport, "--note", note])
+        if not ok:
+            return text(settings, f"Edit Note\nrelay error: {out}", f"编辑备注\n中继错误：{out}"), manage_keyboard(settings)
+        try:
+            return render_edit_rule_detail(settings, int(lport))
+        except ValueError:
+            return out, manage_keyboard(settings)
     return text(settings, "Unknown pending action.", "未知待处理操作。"), manage_keyboard(settings)
 
 
@@ -670,11 +836,11 @@ def handle_command(settings: Settings, text: str) -> str:
             "Open the button menu with /menu.\n\n"
             "Text commands still work:\n"
             "/status\n/mode regular|attack\n/allow <ip|cidr|range> [ruleset]\n"
-            "/remove_allow <id>\n/blocked [limit]\n/promote <blocked_id> [32|24] [ruleset]\n/delete_block <id>\n/ddns",
+            "/remove_allow <id|ip|cidr|range> [ruleset]\n/blocked [limit]\n/promote <blocked_id> [32|24] [ruleset]\n/delete_block <id>\n/ddns",
             "使用 /menu 打开按钮菜单。\n\n"
             "文本命令仍可使用：\n"
             "/status\n/mode regular|attack\n/allow <ip|cidr|range> [ruleset]\n"
-            "/remove_allow <id>\n/blocked [limit]\n/promote <blocked_id> [32|24] [ruleset]\n/delete_block <id>\n/ddns",
+            "/remove_allow <id|ip|cidr|range> [ruleset]\n/blocked [limit]\n/promote <blocked_id> [32|24] [ruleset]\n/delete_block <id>\n/ddns",
         )
     if cmd == "/status":
         ok, out = relay_args(settings, ["status"])
@@ -686,8 +852,11 @@ def handle_command(settings: Settings, text: str) -> str:
         ruleset = parts[2] if len(parts) >= 3 else "public"
         ok, out = relay_args(settings, ["allow", parts[1], "--ruleset", ruleset, "--channel", "manual"])
         return out if ok else text(settings, f"relay error: {out}", f"中继错误：{out}")
-    if cmd == "/remove_allow" and len(parts) == 2:
-        ok, out = relay_args(settings, ["remove-allow", parts[1]])
+    if cmd == "/remove_allow" and len(parts) >= 2:
+        args = ["remove-allow", parts[1]]
+        if len(parts) >= 3:
+            args += ["--ruleset", parts[2]]
+        ok, out = relay_args(settings, args)
         return out if ok else text(settings, f"relay error: {out}", f"中继错误：{out}")
     if cmd == "/blocked":
         limit = parts[1] if len(parts) > 1 else "20"
@@ -730,6 +899,112 @@ def handle_callback(settings: Settings, data: str) -> tuple[str, dict[str, Any] 
 
 
 def handle_callback_for_chat(settings: Settings, chat_id: int, data: str) -> tuple[str, dict[str, Any] | None]:
+    if data == "manage:edit_rule":
+        PENDING_ACTIONS.pop(chat_id, None)
+        return render_edit_rule_list(settings)
+    if data.startswith("edit_rule:select:"):
+        PENDING_ACTIONS.pop(chat_id, None)
+        return render_edit_rule_detail(settings, int(data.rsplit(":", 1)[1]))
+    if data.startswith("edit_rule:access:"):
+        _prefix, _action, lport, mode = data.split(":", 3)
+        ok, out = relay_text(settings, ["edit-rule", lport, "--open" if mode == "open" else "--restricted"])
+        if not ok:
+            return text(settings, f"Edit Forwarding Rule\nrelay error: {out}", f"编辑转发规则\n中继错误：{out}"), manage_keyboard(settings)
+        return render_edit_rule_detail(settings, int(lport))
+    if data.startswith("edit_rule:public:"):
+        _prefix, _action, lport, _toggle = data.split(":", 3)
+        rule, err = rule_by_lport(settings, int(lport))
+        if not rule:
+            return text(settings, f"Edit Forwarding Rule\nrelay error: {err}", f"编辑转发规则\n中继错误：{err}"), manage_keyboard(settings)
+        ok, out = relay_text(settings, ["edit-rule", lport, "--no-public" if rule.get("include_public") else "--public"])
+        if not ok:
+            return text(settings, f"Edit Forwarding Rule\nrelay error: {out}", f"编辑转发规则\n中继错误：{out}"), manage_keyboard(settings)
+        return render_edit_rule_detail(settings, int(lport))
+    if data.startswith("edit_rule:rulesets:"):
+        return render_edit_rule_rulesets(settings, chat_id, int(data.rsplit(":", 1)[1]))
+    if data.startswith("edit_rule:ruleset_toggle:"):
+        _prefix, _action, lport, name = data.split(":", 3)
+        pending = PENDING_ACTIONS.get(chat_id, {"action": "edit_rule_rulesets", "lport": lport, "selected": ""})
+        selected = {x for x in pending.get("selected", "").split(",") if x}
+        if name in selected:
+            selected.remove(name)
+        else:
+            selected.add(name)
+        PENDING_ACTIONS[chat_id] = {"action": "edit_rule_rulesets", "lport": lport, "selected": ",".join(sorted(selected))}
+        return render_edit_rule_rulesets(settings, chat_id, int(lport))
+    if data.startswith("edit_rule:ruleset_clear:"):
+        lport = data.rsplit(":", 1)[1]
+        PENDING_ACTIONS[chat_id] = {"action": "edit_rule_rulesets", "lport": lport, "selected": ""}
+        return render_edit_rule_rulesets(settings, chat_id, int(lport))
+    if data.startswith("edit_rule:ruleset_save:"):
+        lport = data.rsplit(":", 1)[1]
+        pending = PENDING_ACTIONS.get(chat_id, {"selected": ""})
+        selected = [x for x in pending.get("selected", "").split(",") if x]
+        args = ["edit-rule", lport, "--clear-rulesets"]
+        for name in selected:
+            args += ["--ruleset", name]
+        ok, out = relay_text(settings, args)
+        PENDING_ACTIONS.pop(chat_id, None)
+        if not ok:
+            return text(settings, f"Custom Sets\nrelay error: {out}", f"自定义规则集\n中继错误：{out}"), manage_keyboard(settings)
+        return render_edit_rule_detail(settings, int(lport))
+    if data.startswith("edit_rule:note_clear:"):
+        lport = data.rsplit(":", 1)[1]
+        ok, out = relay_text(settings, ["edit-rule", lport, "--clear-note"])
+        if not ok:
+            return text(settings, f"Edit Note\nrelay error: {out}", f"编辑备注\n中继错误：{out}"), manage_keyboard(settings)
+        return render_edit_rule_detail(settings, int(lport))
+    if data.startswith("edit_rule:note:"):
+        lport = data.rsplit(":", 1)[1]
+        PENDING_ACTIONS[chat_id] = {"action": "edit_rule_note", "lport": lport}
+        return text(
+            settings,
+            "Edit Note\nSend the new note. Send '-' or 'clear' to clear it.",
+            "编辑备注\n请发送新备注。发送 '-' 或 'clear' 可清空备注。",
+        ), back_keyboard(f"edit_rule:select:{lport}", settings)
+    if data == "manage:ruleset_sources":
+        PENDING_ACTIONS.pop(chat_id, None)
+        return render_ruleset_sources_menu(settings)
+    if data == "sources:list":
+        PENDING_ACTIONS.pop(chat_id, None)
+        return render_sources_list(settings)
+    if data == "sources:add":
+        PENDING_ACTIONS.pop(chat_id, None)
+        return render_sources_add(settings)
+    if data.startswith("sources:add_ruleset:"):
+        ruleset = data.split(":", 2)[2]
+        PENDING_ACTIONS[chat_id] = {"action": "source_add", "ruleset": ruleset}
+        return text(
+            settings,
+            f"Add Source\nRule set: {ruleset}\n\nSend IP/CIDR/range [note].",
+            f"添加来源\n规则集：{ruleset}\n\n请发送 IP/CIDR/范围 [备注]。",
+        ), ruleset_sources_keyboard(settings)
+    if data == "sources:remove":
+        return render_sources_remove(settings, chat_id)
+    if data.startswith("sources:toggle:"):
+        rid = int(data.rsplit(":", 1)[1])
+        pending = PENDING_ACTIONS.get(chat_id, {"action": "source_remove", "selected": ""})
+        selected = {int(x) for x in pending.get("selected", "").split(",") if x}
+        if rid in selected:
+            selected.remove(rid)
+        else:
+            selected.add(rid)
+        PENDING_ACTIONS[chat_id] = {"action": "source_remove", "selected": ",".join(str(x) for x in sorted(selected))}
+        return render_sources_remove(settings, chat_id)
+    if data == "sources:clear_delete":
+        PENDING_ACTIONS[chat_id] = {"action": "source_remove", "selected": ""}
+        return render_sources_remove(settings, chat_id)
+    if data == "sources:delete_selected":
+        pending = PENDING_ACTIONS.get(chat_id, {"selected": ""})
+        ids = [x for x in pending.get("selected", "").split(",") if x]
+        if not ids:
+            return text(settings, "Remove Sources\nNo sources selected.", "删除来源\n尚未选择来源。"), ruleset_sources_keyboard(settings)
+        results: list[str] = []
+        for entry_id in ids:
+            ok, out = relay_text(settings, ["remove-allow", entry_id])
+            results.append(out if ok else text(settings, f"relay error: {out}", f"中继错误：{out}"))
+        PENDING_ACTIONS.pop(chat_id, None)
+        return "\n".join(results), ruleset_sources_keyboard(settings)
     if data == "manage:secret_url":
         PENDING_ACTIONS.pop(chat_id, None)
         return render_secret_url_menu(settings)

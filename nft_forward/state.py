@@ -261,21 +261,25 @@ class State:
             self.audit("forward_rule_deleted", lport=lport)
         return deleted
 
+    def rule_by_lport(self, lport: int) -> ForwardRule | None:
+        row = self.conn.execute("SELECT * FROM forward_rules WHERE lport=?", (lport,)).fetchone()
+        return self._rule_row(row) if row else None
+
     def rules(self) -> list[ForwardRule]:
         rows = self.conn.execute("SELECT * FROM forward_rules ORDER BY lport").fetchall()
-        return [
-            ForwardRule(
-                id=row["id"],
-                lport=row["lport"],
-                dest_ip=row["dest_ip"],
-                dest_port=row["dest_port"],
-                note=row["note"],
-                rulesets=json.loads(row["rulesets"]),
-                include_public=bool(row["include_public"]),
-                open_access=bool(row["open_access"]),
-            )
-            for row in rows
-        ]
+        return [self._rule_row(row) for row in rows]
+
+    def _rule_row(self, row: sqlite3.Row) -> ForwardRule:
+        return ForwardRule(
+            id=row["id"],
+            lport=row["lport"],
+            dest_ip=row["dest_ip"],
+            dest_port=row["dest_port"],
+            note=row["note"],
+            rulesets=json.loads(row["rulesets"]),
+            include_public=bool(row["include_public"]),
+            open_access=bool(row["open_access"]),
+        )
 
     def add_allow(
         self,
@@ -321,6 +325,27 @@ class State:
         if deleted:
             self.audit("allow_removed", id=entry_id)
         return deleted
+
+    def remove_allow_sources(self, ruleset: str, sources: list[str], channel: str | None = None) -> int:
+        if not sources:
+            return 0
+        removed = 0
+        for source in sources:
+            if channel:
+                cur = self.conn.execute(
+                    "DELETE FROM allow_entries WHERE ruleset=? AND source=? AND channel=?",
+                    (ruleset, source, channel),
+                )
+            else:
+                cur = self.conn.execute(
+                    "DELETE FROM allow_entries WHERE ruleset=? AND source=?",
+                    (ruleset, source),
+                )
+            removed += cur.rowcount
+        self.conn.commit()
+        if removed:
+            self.audit("allow_sources_removed", ruleset=ruleset, sources=sources, channel=channel, count=removed)
+        return removed
 
     def remove_ddns_allow_entries(self, pairs: list[tuple[str, str]]) -> int:
         removed = 0

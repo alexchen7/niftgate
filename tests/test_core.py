@@ -195,6 +195,115 @@ class CoreTests(unittest.TestCase):
             self.assertEqual(state.all_allow_entries(), [])
             state.close()
 
+    def test_edit_rule_cli_updates_existing_rule_fields(self) -> None:
+        with self.tempdir() as td:
+            cfg = Path(td) / "config.json"
+            state_db = Path(td) / "state.db"
+            cfg.write_text(json.dumps({"paths": {"state_db": str(state_db)}}), encoding="utf-8")
+
+            self.assertEqual(
+                cli_main(
+                    [
+                        "--config",
+                        str(cfg),
+                        "add-rule",
+                        "58495",
+                        "203.0.113.20",
+                        "58495",
+                        "--ruleset",
+                        "ddns",
+                        "--note",
+                        "old note",
+                        "--no-apply",
+                    ]
+                ),
+                0,
+            )
+            self.assertEqual(
+                cli_main(
+                    [
+                        "--config",
+                        str(cfg),
+                        "edit-rule",
+                        "58495",
+                        "--open",
+                        "--no-public",
+                        "--ruleset",
+                        "office",
+                        "--note",
+                        "new note",
+                        "--no-apply",
+                    ]
+                ),
+                0,
+            )
+            state = State(state_db)
+            rule = state.rule_by_lport(58495)
+            self.assertIsNotNone(rule)
+            self.assertEqual(rule.dest_ip, "203.0.113.20")
+            self.assertEqual(rule.dest_port, 58495)
+            self.assertEqual(rule.note, "new note")
+            self.assertEqual(rule.rulesets, ["office"])
+            self.assertFalse(rule.include_public)
+            self.assertTrue(rule.open_access)
+            state.close()
+
+            self.assertEqual(
+                cli_main(
+                    [
+                        "--config",
+                        str(cfg),
+                        "edit-rule",
+                        "58495",
+                        "--restricted",
+                        "--public",
+                        "--clear-rulesets",
+                        "--clear-note",
+                        "--no-apply",
+                    ]
+                ),
+                0,
+            )
+            state = State(state_db)
+            rule = state.rule_by_lport(58495)
+            self.assertEqual(rule.note, "")
+            self.assertEqual(rule.rulesets, [])
+            self.assertTrue(rule.include_public)
+            self.assertFalse(rule.open_access)
+            state.close()
+
+    def test_remove_allow_by_source_from_ruleset(self) -> None:
+        with self.tempdir() as td:
+            cfg = Path(td) / "config.json"
+            state_db = Path(td) / "state.db"
+            cfg.write_text(json.dumps({"paths": {"state_db": str(state_db)}}), encoding="utf-8")
+            state = State(state_db)
+            state.add_allow("ddns", "198.51.100.0/24", "manual", 24, note="home")
+            state.add_allow("public", "198.51.100.0/24", "manual", 24, note="public")
+            state.close()
+
+            self.assertEqual(
+                cli_main(
+                    [
+                        "--config",
+                        str(cfg),
+                        "remove-allow",
+                        "198.51.100.42",
+                        "--ruleset",
+                        "ddns",
+                        "--prefix",
+                        "24",
+                        "--no-apply",
+                    ]
+                ),
+                0,
+            )
+            state = State(state_db)
+            rows = state.all_allow_entries()
+            self.assertEqual(len(rows), 1)
+            self.assertEqual(rows[0].ruleset, "public")
+            state.close()
+
 
 if __name__ == "__main__":
     unittest.main()
