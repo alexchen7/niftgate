@@ -68,7 +68,13 @@ def api(settings: Settings, method: str, payload: dict[str, Any]) -> dict[str, A
         payload = {**payload, "reply_markup": json.dumps(payload["reply_markup"], ensure_ascii=False)}
     data = urllib.parse.urlencode(payload).encode("utf-8")
     req = urllib.request.Request(url, data=data)
-    with urllib.request.urlopen(req, timeout=settings.telegram_timeout) as resp:
+    request_timeout = settings.telegram_timeout
+    if method == "getUpdates":
+        try:
+            request_timeout = max(request_timeout, int(payload.get("timeout", 0)) + 5)
+        except (TypeError, ValueError):
+            pass
+    with urllib.request.urlopen(req, timeout=request_timeout) as resp:
         return json.loads(resp.read().decode("utf-8"))
 
 
