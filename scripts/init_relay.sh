@@ -19,17 +19,71 @@ else
 fi
 
 if [[ "${ID}" != "debian" && "${ID}" != "ubuntu" ]]; then
-    echo "Warning: this installer is tested on Debian/Ubuntu; continuing anyway." >&2
+    echo "Warning: this installer is tested on Debian/Ubuntu; attempting a best-effort Linux install." >&2
 fi
 
-need_pkg=()
-for cmd in python3 nft ssh systemctl; do
-    command -v "${cmd}" >/dev/null 2>&1 || need_pkg+=("${cmd}")
-done
-if ((${#need_pkg[@]})); then
-    apt-get update -y
-    apt-get install -y python3 nftables openssh-client systemd
-fi
+install_relay_packages() {
+    local need_pkg=()
+    for cmd in python3 nft ssh systemctl sysctl; do
+        command -v "${cmd}" >/dev/null 2>&1 || need_pkg+=("${cmd}")
+    done
+    if ((${#need_pkg[@]} == 0)); then
+        return 0
+    fi
+
+    if command -v apt-get >/dev/null 2>&1; then
+        apt-get update -y
+        DEBIAN_FRONTEND=noninteractive apt-get install -y \
+            -o Dpkg::Options::=--force-confdef \
+            -o Dpkg::Options::=--force-confold \
+            python3 nftables openssh-client systemd procps
+    elif command -v dnf >/dev/null 2>&1; then
+        dnf install -y python3 nftables openssh-clients systemd procps-ng
+    elif command -v yum >/dev/null 2>&1; then
+        yum install -y python3 nftables openssh-clients systemd procps-ng
+    elif command -v pacman >/dev/null 2>&1; then
+        pacman -Sy --noconfirm python nftables openssh systemd procps-ng
+    else
+        echo "Missing required commands: ${need_pkg[*]}" >&2
+        echo "Install Python 3, nftables, OpenSSH client, systemd, and procps/sysctl, then rerun this script." >&2
+        exit 1
+    fi
+}
+
+enable_ipv4_forwarding() {
+    local conf_file="/etc/sysctl.d/99-niftgate-ip-forward.conf"
+    echo "Enabling IPv4 forwarding for relay traffic..."
+
+    if [[ -d /etc/sysctl.d ]]; then
+        printf '%s\n' "net.ipv4.ip_forward=1" >"${conf_file}"
+        chmod 0644 "${conf_file}" || true
+    else
+        touch /etc/sysctl.conf
+        if grep -Eq '^[[:space:]]*#?[[:space:]]*net\.ipv4\.ip_forward[[:space:]]*=' /etc/sysctl.conf; then
+            sed -i.bak -E 's/^[[:space:]]*#?[[:space:]]*net\.ipv4\.ip_forward[[:space:]]*=.*/net.ipv4.ip_forward=1/' /etc/sysctl.conf
+        else
+            printf '\n%s\n' "net.ipv4.ip_forward=1" >>/etc/sysctl.conf
+        fi
+    fi
+
+    if command -v sysctl >/dev/null 2>&1; then
+        sysctl -w net.ipv4.ip_forward=1 >/dev/null || true
+        if [[ -f "${conf_file}" ]]; then
+            sysctl -p "${conf_file}" >/dev/null 2>&1 || true
+        else
+            sysctl -p /etc/sysctl.conf >/dev/null 2>&1 || true
+        fi
+    elif [[ -w /proc/sys/net/ipv4/ip_forward ]]; then
+        printf '%s\n' "1" >/proc/sys/net/ipv4/ip_forward || true
+    fi
+
+    if [[ "$(cat /proc/sys/net/ipv4/ip_forward 2>/dev/null || printf '%s' unknown)" != "1" ]]; then
+        echo "Warning: IPv4 forwarding could not be confirmed; check net.ipv4.ip_forward manually." >&2
+    fi
+}
+
+install_relay_packages
+enable_ipv4_forwarding
 
 mkdir -p "${INSTALL_DIR}" "${CONFIG_DIR}" "${STATE_DIR}" "${LOG_DIR}" /etc/nftables.d
 cp -a "${PROJECT_DIR}/." "${INSTALL_DIR}/"
