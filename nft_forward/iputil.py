@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import ipaddress
 from dataclasses import dataclass
+from typing import Iterable
 
 
 @dataclass(frozen=True)
@@ -49,6 +50,27 @@ def normalize_sources(value: str, host_policy: int | None = None) -> list[Source
         if part:
             specs.append(normalize_network(part, host_policy))
     return specs
+
+
+def collapse_sources_for_nft(sources: Iterable[str]) -> list[str]:
+    networks: list[ipaddress.IPv4Network] = []
+    for source in sources:
+        text = source.strip()
+        if not text:
+            continue
+        if "-" in text:
+            start_s, end_s = text.split("-", 1)
+            start = ipaddress.ip_address(start_s.strip())
+            end = ipaddress.ip_address(end_s.strip())
+            if start.version != 4 or end.version != 4:
+                raise ValueError("only IPv4 ranges are supported")
+            networks.extend(ipaddress.summarize_address_range(start, end))
+        else:
+            network = ipaddress.ip_network(text, strict=False)
+            if network.version != 4:
+                raise ValueError("only IPv4 networks are supported")
+            networks.append(network)
+    return [str(network) for network in ipaddress.collapse_addresses(networks)]
 
 
 def contains_ip(source: str, ip: str) -> bool:

@@ -7,7 +7,8 @@ import tempfile
 from pathlib import Path
 
 from .config import Settings
-from .constants import LOG_PREFIX, TABLE_NAME
+from .constants import LEGACY_TABLE_NAMES, LOG_PREFIX, TABLE_NAME
+from .iputil import collapse_sources_for_nft
 from .state import State
 
 
@@ -28,7 +29,7 @@ def render_nft(settings: Settings, state: State) -> str:
     rules = state.rules()
     effective: dict[int, list[str]] = {}
     for rule in rules:
-        sources = state.effective_sources_for_rule(rule)
+        sources = collapse_sources_for_nft(state.effective_sources_for_rule(rule))
         effective[rule.lport] = sources
         if not rule.open_access and sources:
             lines += [
@@ -43,7 +44,6 @@ def render_nft(settings: Settings, state: State) -> str:
     if guarded:
         lines += [
             "    chain source_guard {",
-            "        type filter hook prerouting priority -101; policy accept;",
         ]
         for rule in guarded:
             sources = effective[rule.lport]
@@ -64,6 +64,8 @@ def render_nft(settings: Settings, state: State) -> str:
         "    chain prerouting {",
         "        type nat hook prerouting priority -100; policy accept;",
     ]
+    if guarded:
+        lines += ["        jump source_guard"]
     for rule in rules:
         lines.append("")
         lines.append(f"        # 转发: 本机:{rule.lport} -> {rule.dest_ip}:{rule.dest_port}")
@@ -115,8 +117,12 @@ def detect_local_ip() -> str:
 def validate_nft(text: str) -> tuple[bool, str]:
     if shutil.which("nft") is None:
         return True, "nft not installed; skipped validation"
+    # `nft -c` checks against the current live ruleset. Reusing the managed
+    # table name can produce false "File exists" errors for unchanged sets.
+    validation_table = f"{TABLE_NAME}_check_{os.getpid()}"
+    check_text = text.replace(f"table ip {TABLE_NAME} {{", f"table ip {validation_table} {{", 1)
     with tempfile.NamedTemporaryFile("w", encoding="utf-8", delete=False) as fh:
-        fh.write(text)
+        fh.write(check_text)
         tmp = fh.name
     try:
         proc = subprocess.run(["nft", "-c", "-f", tmp], text=True, capture_output=True, timeout=10)
@@ -144,6 +150,9 @@ def write_and_apply(settings: Settings, state: State, apply: bool = True) -> str
     if apply and shutil.which("nft"):
         subprocess.run(["nft", "flush", "table", "ip", TABLE_NAME], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         subprocess.run(["nft", "delete", "table", "ip", TABLE_NAME], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        for legacy_table in LEGACY_TABLE_NAMES:
+            subprocess.run(["nft", "flush", "table", "ip", legacy_table], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            subprocess.run(["nft", "delete", "table", "ip", legacy_table], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         proc = subprocess.run(["nft", "-f", str(settings.paths.nft_conf)], text=True, capture_output=True, timeout=10)
         if proc.returncode != 0:
             raise RuntimeError(proc.stderr.strip() or "nft apply failed")

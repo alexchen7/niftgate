@@ -2,15 +2,18 @@ from __future__ import annotations
 
 import os
 import json
+import subprocess
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from nft_forward.config import Settings, clean_secret_path, default_paths, load_settings
 from nft_forward.cli import export_payload, main as cli_main, migrate_secret_path
 from nft_forward.geo import GeoLookup
-from nft_forward.iputil import normalize_network, normalize_sources
-from nft_forward.nft import render_nft
+from nft_forward.iputil import collapse_sources_for_nft, normalize_network, normalize_sources
+from nft_forward.nft import render_nft, validate_nft, write_and_apply
+from nft_forward.phone_server import _RECENT_HITS, _RECENT_HITS_LOCK, accept_hit
 from nft_forward.sshutil import build_ssh_command
 from nft_forward.state import State
 
@@ -31,6 +34,10 @@ class CoreTests(unittest.TestCase):
     def test_multi_sources(self) -> None:
         values = [x.text for x in normalize_sources("1.1.1.1, 2.2.2.0/24")]
         self.assertEqual(values, ["1.1.1.1/32", "2.2.2.0/24"])
+
+    def test_collapse_sources_for_nft_removes_overlaps(self) -> None:
+        sources = collapse_sources_for_nft(["82.40.32.0/24", "82.40.32.151/32", "198.51.100.1-198.51.100.2"])
+        self.assertEqual(sources, ["82.40.32.0/24", "198.51.100.1/32", "198.51.100.2/32"])
 
     def test_render_closed_until_allowed(self) -> None:
         with self.tempdir() as td:
@@ -54,7 +61,56 @@ class CoreTests(unittest.TestCase):
             state.add_allow("public", "198.51.100.0/24", "manual", 24)
             text = render_nft(settings, state)
             self.assertIn("set src_60001", text)
+            self.assertIn("    chain source_guard {\n", text)
+            self.assertNotIn("type filter hook prerouting", text)
+            self.assertIn("        jump source_guard", text)
             self.assertIn("ip saddr @src_60001 tcp dport 60001 dnat", text)
+            state.close()
+
+    def test_render_collapses_overlapping_source_set(self) -> None:
+        with self.tempdir() as td:
+            paths = default_paths(Path(td))
+            paths.state_db = Path(td) / "state.db"
+            settings = Settings(paths=paths)
+            state = State(paths.state_db)
+            state.add_rule(24680, "203.0.113.10", 24678)
+            state.add_allow("public", "82.40.32.0/24", "manual", 24)
+            state.add_allow("public", "82.40.32.151/32", "manual", 32)
+            text = render_nft(settings, state)
+            self.assertIn("82.40.32.0/24", text)
+            self.assertNotIn("82.40.32.151/32", text)
+            state.close()
+
+    def test_validate_uses_temporary_table_name(self) -> None:
+        checked: dict[str, str] = {}
+
+        def fake_run(cmd, text, capture_output, timeout):  # noqa: ANN001
+            checked["body"] = Path(cmd[-1]).read_text(encoding="utf-8")
+            return subprocess.CompletedProcess(cmd, 0, "", "")
+
+        nft_text = "table ip nft_forward {\n    set src_1935 { type ipv4_addr; flags interval; elements = { 82.40.32.151/32 } }\n}\n"
+        with patch("nft_forward.nft.shutil.which", return_value="/usr/sbin/nft"), patch("nft_forward.nft.subprocess.run", fake_run):
+            ok, _ = validate_nft(nft_text)
+        self.assertTrue(ok)
+        self.assertIn("table ip nft_forward_check_", checked["body"])
+        self.assertNotIn("table ip nft_forward {", checked["body"])
+
+    def test_apply_removes_legacy_live_table(self) -> None:
+        with self.tempdir() as td:
+            paths = default_paths(Path(td))
+            paths.state_db = Path(td) / "state.db"
+            paths.nft_conf = Path(td) / "port-forward.conf"
+            settings = Settings(paths=paths)
+            state = State(paths.state_db)
+            calls: list[list[str]] = []
+
+            def fake_run(cmd, **kwargs):  # noqa: ANN001, ANN202
+                calls.append(list(cmd))
+                return subprocess.CompletedProcess(cmd, 0, "", "")
+
+            with patch("nft_forward.nft.shutil.which", return_value="/usr/sbin/nft"), patch("nft_forward.nft.subprocess.run", fake_run):
+                write_and_apply(settings, state, apply=True)
+            self.assertIn(["nft", "delete", "table", "ip", "port_forward"], calls)
             state.close()
 
     def test_geo_cache_merges_geo_and_isp(self) -> None:
@@ -87,6 +143,22 @@ class CoreTests(unittest.TestCase):
             self.assertEqual(state.delete_secret_urls([1]), 1)
             self.assertIsNone(state.secret_url_by_path("super-secret"))
             state.close()
+
+    def test_exit_queue_deduplicates_matching_payloads(self) -> None:
+        with self.tempdir() as td:
+            state = State(Path(td) / "state.db")
+            state.enqueue("ingest", {"ip": "198.51.100.10", "channel": "web", "ruleset": "public"})
+            state.enqueue("ingest", {"ruleset": "public", "channel": "web", "ip": "198.51.100.10"})
+            count = state.conn.execute("SELECT count(*) FROM exit_queue").fetchone()[0]
+            self.assertEqual(count, 1)
+            state.close()
+
+    def test_secret_url_hit_throttle(self) -> None:
+        with _RECENT_HITS_LOCK:
+            _RECENT_HITS.clear()
+        self.assertTrue(accept_hit(1, "198.51.100.10"))
+        self.assertFalse(accept_hit(1, "198.51.100.10"))
+        self.assertTrue(accept_hit(1, "198.51.100.11"))
 
     def test_placeholder_secret_path_is_not_migrated(self) -> None:
         with self.tempdir() as td:

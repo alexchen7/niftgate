@@ -2,8 +2,8 @@ from __future__ import annotations
 
 import json
 import shlex
+import sys
 import time
-import traceback
 import urllib.parse
 import urllib.request
 from typing import Any
@@ -13,6 +13,11 @@ from .exitnode import relay_args, sync_from_relay
 
 PENDING_ACTIONS: dict[int, dict[str, str]] = {}
 MAX_MESSAGE = 3900
+
+
+def log_error(context: str, exc: BaseException) -> None:
+    stamp = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+    print(f"{stamp} telegram {context}: {exc.__class__.__name__}: {exc}", file=sys.stderr, flush=True)
 
 
 LABELS = {
@@ -102,8 +107,8 @@ def send(settings: Settings, chat_id: int, text: str, reply_markup: dict[str, An
         if reply_markup:
             payload["reply_markup"] = reply_markup
         api(settings, "sendMessage", payload)
-    except Exception:
-        traceback.print_exc()
+    except Exception as exc:
+        log_error("sendMessage failed", exc)
 
 
 def edit(settings: Settings, chat_id: int, message_id: int, text: str, reply_markup: dict[str, Any] | None = None) -> None:
@@ -112,8 +117,8 @@ def edit(settings: Settings, chat_id: int, message_id: int, text: str, reply_mar
         if reply_markup:
             payload["reply_markup"] = reply_markup
         api(settings, "editMessageText", payload)
-    except Exception:
-        traceback.print_exc()
+    except Exception as exc:
+        log_error("editMessageText failed", exc)
         send(settings, chat_id, text, reply_markup)
 
 
@@ -123,8 +128,8 @@ def answer_callback(settings: Settings, callback_id: str, text: str = "") -> Non
         if text:
             payload["text"] = text
         api(settings, "answerCallbackQuery", payload)
-    except Exception:
-        traceback.print_exc()
+    except Exception as exc:
+        log_error("answerCallbackQuery failed", exc)
 
 
 def authorized(settings: Settings, chat_id: int) -> bool:
@@ -1290,7 +1295,7 @@ def run() -> None:
                     reply, markup = handle_message(settings, chat_id, text)
                     send(settings, chat_id, reply, markup)
             backoff = 2
-        except Exception:
-            traceback.print_exc()
+        except Exception as exc:
+            log_error(f"getUpdates failed; retrying in {backoff}s", exc)
             time.sleep(backoff)
             backoff = min(backoff * 2, 60)

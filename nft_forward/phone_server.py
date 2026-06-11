@@ -1,11 +1,34 @@
 from __future__ import annotations
 
 import json
+import threading
+import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse
 
 from .config import load_settings
-from .exitnode import push_ingest, push_secret_hit, state_for, sync_from_relay
+from .exitnode import enqueue_relay, state_for, sync_from_relay
+
+
+HIT_DEDUP_SECONDS = 10
+_RECENT_HITS: dict[tuple[int, str], float] = {}
+_RECENT_HITS_LOCK = threading.Lock()
+
+
+def accept_hit(url_id: int, source_ip: str) -> bool:
+    now = time.monotonic()
+    key = (url_id, source_ip)
+    with _RECENT_HITS_LOCK:
+        if len(_RECENT_HITS) > 4096:
+            cutoff = now - HIT_DEDUP_SECONDS
+            for old_key, seen_at in list(_RECENT_HITS.items()):
+                if seen_at < cutoff:
+                    _RECENT_HITS.pop(old_key, None)
+        last_seen = _RECENT_HITS.get(key)
+        if last_seen is not None and now - last_seen < HIT_DEDUP_SECONDS:
+            return False
+        _RECENT_HITS[key] = now
+    return True
 
 
 class PhoneHandler(BaseHTTPRequestHandler):
@@ -27,15 +50,18 @@ class PhoneHandler(BaseHTTPRequestHandler):
         if not source_ip:
             source_ip = self.client_address[0]
         note = f"secret-url:{url.label or url.id}"
-        ok = push_ingest(settings, "web", source_ip, ruleset=url.ruleset, note=note)
-        state = state_for(settings)
-        try:
-            state.record_secret_url_hit(url.id)
-        finally:
-            state.close()
-        push_secret_hit(settings, url.id)
-        body = {"ok": ok, "source_ip": source_ip, "ruleset": url.ruleset}
-        self.send_response(200 if ok else 202)
+        queued = False
+        if accept_hit(url.id, source_ip):
+            enqueue_relay(settings, "ingest", {"channel": "web", "ip": source_ip, "ruleset": url.ruleset, "note": note})
+            enqueue_relay(settings, "secret_hit", {"id": url.id})
+            state = state_for(settings)
+            try:
+                state.record_secret_url_hit(url.id)
+            finally:
+                state.close()
+            queued = True
+        body = {"ok": True, "queued": queued, "source_ip": source_ip, "ruleset": url.ruleset}
+        self.send_response(202)
         self.send_header("Content-Type", "application/json")
         self.end_headers()
         self.wfile.write(json.dumps(body).encode("utf-8"))

@@ -460,10 +460,21 @@ class State:
 
     def enqueue(self, action: str, payload: dict[str, Any]) -> None:
         now = utc_now()
-        self.conn.execute(
-            "INSERT INTO exit_queue(action,payload,created_at,next_attempt_at) VALUES(?,?,?,?)",
-            (action, json.dumps(payload, ensure_ascii=False), now, now),
-        )
+        payload_text = json.dumps(payload, ensure_ascii=False, sort_keys=True)
+        row = self.conn.execute(
+            "SELECT id FROM exit_queue WHERE action=? AND payload=? LIMIT 1",
+            (action, payload_text),
+        ).fetchone()
+        if row:
+            self.conn.execute(
+                "UPDATE exit_queue SET next_attempt_at=MIN(next_attempt_at, ?) WHERE id=?",
+                (now, row["id"]),
+            )
+        else:
+            self.conn.execute(
+                "INSERT INTO exit_queue(action,payload,created_at,next_attempt_at) VALUES(?,?,?,?)",
+                (action, payload_text, now, now),
+            )
         self.conn.commit()
 
     def due_queue(self, limit: int = 20) -> list[sqlite3.Row]:
