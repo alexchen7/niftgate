@@ -10,10 +10,11 @@ from unittest.mock import patch
 
 from nft_forward.config import Settings, clean_secret_path, default_paths, load_settings
 from nft_forward.cli import export_payload, main as cli_main, migrate_secret_path
-from nft_forward.geo import GeoLookup
+from nft_forward.geo import GeoInfo, GeoLookup
 from nft_forward.iputil import collapse_sources_for_nft, normalize_network, normalize_sources
 from nft_forward.nft import render_nft, validate_nft, write_and_apply
 from nft_forward.phone_server import _RECENT_HITS, _RECENT_HITS_LOCK, accept_hit
+from nft_forward.relay import ingest_source, retry_pending_apply
 from nft_forward.sshutil import build_ssh_command
 from nft_forward.state import State
 
@@ -111,6 +112,43 @@ class CoreTests(unittest.TestCase):
             with patch("nft_forward.nft.shutil.which", return_value="/usr/sbin/nft"), patch("nft_forward.nft.subprocess.run", fake_run):
                 write_and_apply(settings, state, apply=True)
             self.assertIn(["nft", "delete", "table", "ip", "port_forward"], calls)
+            state.close()
+
+    def test_ingest_marks_pending_apply_on_reload_failure(self) -> None:
+        with self.tempdir() as td:
+            paths = default_paths(Path(td))
+            paths.state_db = Path(td) / "state.db"
+            paths.audit_log = Path(td) / "audit.jsonl"
+            paths.nft_conf = Path(td) / "port-forward.conf"
+            settings = Settings(paths=paths)
+
+            with patch("nft_forward.relay.GeoLookup.lookup", return_value=GeoInfo()), patch(
+                "nft_forward.relay.write_and_apply", side_effect=RuntimeError("reload failed")
+            ):
+                with self.assertRaises(RuntimeError):
+                    ingest_source(settings, "ssh_login", "198.51.100.8", apply_rules=True)
+
+            state = State(paths.state_db)
+            self.assertEqual(state.get_meta("apply_pending"), "1")
+            self.assertEqual(state.active_allow_entries()[0].source, "198.51.100.0/24")
+            state.close()
+
+    def test_retry_pending_apply_clears_marker_on_success(self) -> None:
+        with self.tempdir() as td:
+            paths = default_paths(Path(td))
+            paths.state_db = Path(td) / "state.db"
+            paths.audit_log = Path(td) / "audit.jsonl"
+            paths.nft_conf = Path(td) / "port-forward.conf"
+            settings = Settings(paths=paths)
+            state = State(paths.state_db, paths.audit_log)
+            state.set_meta("apply_pending", "1")
+            state.close()
+
+            with patch("nft_forward.relay.write_and_apply", return_value="ok"):
+                self.assertTrue(retry_pending_apply(settings))
+
+            state = State(paths.state_db)
+            self.assertEqual(state.get_meta("apply_pending"), "0")
             state.close()
 
     def test_geo_cache_merges_geo_and_isp(self) -> None:
@@ -246,7 +284,7 @@ class CoreTests(unittest.TestCase):
             cfg = Path(td) / "config.json"
             state_db = Path(td) / "state.db"
             cfg.write_text(
-                json.dumps({"paths": {"state_db": str(state_db)}, "ddns": []}),
+                json.dumps({"paths": {"state_db": str(state_db), "audit_log": str(Path(td) / "audit.jsonl")}, "ddns": []}),
                 encoding="utf-8",
             )
             self.assertEqual(
@@ -271,7 +309,10 @@ class CoreTests(unittest.TestCase):
         with self.tempdir() as td:
             cfg = Path(td) / "config.json"
             state_db = Path(td) / "state.db"
-            cfg.write_text(json.dumps({"paths": {"state_db": str(state_db)}}), encoding="utf-8")
+            cfg.write_text(
+                json.dumps({"paths": {"state_db": str(state_db), "audit_log": str(Path(td) / "audit.jsonl")}}),
+                encoding="utf-8",
+            )
 
             self.assertEqual(
                 cli_main(
@@ -348,7 +389,10 @@ class CoreTests(unittest.TestCase):
         with self.tempdir() as td:
             cfg = Path(td) / "config.json"
             state_db = Path(td) / "state.db"
-            cfg.write_text(json.dumps({"paths": {"state_db": str(state_db)}}), encoding="utf-8")
+            cfg.write_text(
+                json.dumps({"paths": {"state_db": str(state_db), "audit_log": str(Path(td) / "audit.jsonl")}}),
+                encoding="utf-8",
+            )
             state = State(state_db)
             state.add_allow("ddns", "198.51.100.0/24", "manual", 24, note="home")
             state.add_allow("public", "198.51.100.0/24", "manual", 24, note="public")
@@ -383,7 +427,7 @@ class CoreTests(unittest.TestCase):
             cfg.write_text(
                 json.dumps(
                     {
-                        "paths": {"state_db": str(state_db)},
+                        "paths": {"state_db": str(state_db), "audit_log": str(Path(td) / "audit.jsonl")},
                         "ddns": [{"host": "mobile.example.com", "ruleset": "office", "enabled": True}],
                     }
                 ),
@@ -414,7 +458,10 @@ class CoreTests(unittest.TestCase):
         with self.tempdir() as td:
             cfg = Path(td) / "config.json"
             state_db = Path(td) / "state.db"
-            cfg.write_text(json.dumps({"paths": {"state_db": str(state_db)}}), encoding="utf-8")
+            cfg.write_text(
+                json.dumps({"paths": {"state_db": str(state_db), "audit_log": str(Path(td) / "audit.jsonl")}}),
+                encoding="utf-8",
+            )
             self.assertEqual(cli_main(["--config", str(cfg), "ruleset", "delete", "public", "--no-apply"]), 1)
 
 

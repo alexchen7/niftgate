@@ -19,6 +19,31 @@ def state_for(settings: Settings) -> State:
     return State(settings.paths.state_db, settings.paths.audit_log)
 
 
+def apply_state(settings: Settings, state: State, reason: str) -> str:
+    try:
+        message = write_and_apply(settings, state, apply=True)
+    except Exception as exc:
+        state.set_meta("apply_pending", "1")
+        state.audit("nft_apply_failed", reason=reason, error=str(exc))
+        raise
+    state.set_meta("apply_pending", "0")
+    state.audit("nft_apply_ok", reason=reason, message=message)
+    return message
+
+
+def retry_pending_apply(settings: Settings) -> bool:
+    state = state_for(settings)
+    try:
+        if state.get_meta("apply_pending", "0") != "1":
+            return False
+        apply_state(settings, state, "pending-retry")
+        return True
+    except Exception:
+        return False
+    finally:
+        state.close()
+
+
 def source_for_channel(state: State, ruleset: str, channel: str, ip: str) -> tuple[str, int | None]:
     prefix = state.ruleset_prefix(ruleset, channel)
     spec = normalize_network(ip, host_policy=prefix)
@@ -49,13 +74,15 @@ def ingest_source(
             isp=geo.isp,
         )
         if ok and apply_rules:
-            write_and_apply(settings, state, apply=True)
+            apply_state(settings, state, f"ingest:{channel}")
         return ok
     finally:
         state.close()
 
 
 def sync_ddns(settings: Settings, apply_rules: bool = True) -> int:
+    if apply_rules:
+        retry_pending_apply(settings)
     cfg_path = settings.paths.config_file if settings.paths else None
     if not cfg_path or not cfg_path.exists():
         return 0
@@ -92,7 +119,7 @@ def sync_ddns(settings: Settings, apply_rules: bool = True) -> int:
     if changed and apply_rules:
         state = state_for(settings)
         try:
-            write_and_apply(settings, state, apply=True)
+            apply_state(settings, state, "sync-ddns")
         finally:
             state.close()
     return changed

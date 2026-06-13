@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import re
 import subprocess
+import sys
 import time
 from pathlib import Path
 
@@ -49,9 +50,11 @@ def run() -> None:
                     seen = set(list(seen)[-1024:])
                 try:
                     handle_line(line)
-                except Exception:
-                    pass
-        except (OSError, AssertionError):
+                except Exception as exc:
+                    print(f"nft-forward sshlog line error: {type(exc).__name__}: {exc}", file=sys.stderr, flush=True)
+        except (OSError, AssertionError) as exc:
+            print(f"nft-forward sshlog reader error: {type(exc).__name__}: {exc}", file=sys.stderr, flush=True)
             time.sleep(10)
-        except Exception:
+        except Exception as exc:
+            print(f"nft-forward sshlog error: {type(exc).__name__}: {exc}", file=sys.stderr, flush=True)
             time.sleep(5)
