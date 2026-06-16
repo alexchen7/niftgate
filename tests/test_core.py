@@ -15,7 +15,7 @@ from nft_forward.iputil import collapse_sources_for_nft, normalize_network, norm
 from nft_forward.nft import render_nft, validate_nft, write_and_apply
 from nft_forward.phone_server import _RECENT_HITS, _RECENT_HITS_LOCK, accept_hit
 from nft_forward.relay import ingest_source, retry_pending_apply
-from nft_forward.sshutil import build_ssh_command
+from nft_forward.sshutil import build_ssh_command, ssh_command
 from nft_forward.state import State
 
 
@@ -231,6 +231,38 @@ class CoreTests(unittest.TestCase):
             self.assertEqual(cmd[:3], ["sshpass", "-f", str(password)])
             self.assertIn("BatchMode=no", cmd)
             self.assertEqual(cmd[-2:], ["nft.sh", "status"])
+
+    def test_ssh_command_retries_transient_kex_close(self) -> None:
+        with self.tempdir() as td:
+            password = Path(td) / "pass"
+            password.write_text("secret\n", encoding="utf-8")
+            calls = 0
+
+            def fake_run(cmd, **kwargs):  # noqa: ANN001, ANN202
+                nonlocal calls
+                calls += 1
+                if calls == 1:
+                    return subprocess.CompletedProcess(
+                        cmd,
+                        255,
+                        "",
+                        "kex_exchange_identification: Connection closed by remote host\n",
+                    )
+                return subprocess.CompletedProcess(cmd, 0, "ok\n", "")
+
+            with patch("nft_forward.sshutil.subprocess.run", fake_run), patch("nft_forward.sshutil.time.sleep"):
+                result = ssh_command(
+                    "relay.local",
+                    "root",
+                    22,
+                    "",
+                    ["nft.sh", "bot-status"],
+                    auth_method="password",
+                    password_file=str(password),
+                )
+            self.assertTrue(result.ok)
+            self.assertEqual(result.stdout, "ok\n")
+            self.assertEqual(calls, 2)
 
     def test_pair_relay_updates_only_relay_settings(self) -> None:
         with self.tempdir() as td:
