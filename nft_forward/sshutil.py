@@ -15,6 +15,24 @@ class SSHResult:
     latency_ms: int | None = None
 
 
+SSH_ATTEMPTS = 5
+TRANSIENT_SSH_ERRORS = (
+    "kex_exchange_identification",
+    "connection closed by remote host",
+    "connection reset by peer",
+    "ssh timeout",
+)
+
+
+def is_transient_ssh_failure(result: SSHResult) -> bool:
+    if result.ok:
+        return False
+    if result.returncode not in {124, 255}:
+        return False
+    text = f"{result.stdout}\n{result.stderr}".lower()
+    return any(pattern in text for pattern in TRANSIENT_SSH_ERRORS)
+
+
 def build_ssh_command(
     host: str,
     user: str,
@@ -74,10 +92,18 @@ def ssh_command(
     except ValueError as exc:
         return SSHResult(False, "", str(exc), 255)
     start = time.monotonic()
-    try:
-        proc = subprocess.run(cmd, text=True, capture_output=True, timeout=timeout + 3)
-    except subprocess.TimeoutExpired as exc:
-        return SSHResult(False, exc.stdout or "", "ssh timeout", 124, int((time.monotonic() - start) * 1000))
-    except OSError as exc:
-        return SSHResult(False, "", str(exc), 127, int((time.monotonic() - start) * 1000))
-    return SSHResult(proc.returncode == 0, proc.stdout, proc.stderr, proc.returncode, int((time.monotonic() - start) * 1000))
+    result: SSHResult | None = None
+    for attempt in range(SSH_ATTEMPTS):
+        try:
+            proc = subprocess.run(cmd, text=True, capture_output=True, timeout=timeout + 3)
+            result = SSHResult(proc.returncode == 0, proc.stdout, proc.stderr, proc.returncode)
+        except subprocess.TimeoutExpired as exc:
+            result = SSHResult(False, exc.stdout or "", "ssh timeout", 124)
+        except OSError as exc:
+            return SSHResult(False, "", str(exc), 127, int((time.monotonic() - start) * 1000))
+        result.latency_ms = int((time.monotonic() - start) * 1000)
+        if result.ok or attempt == SSH_ATTEMPTS - 1 or not is_transient_ssh_failure(result):
+            return result
+        time.sleep(min(2.0, 0.5 * (attempt + 1)))
+    assert result is not None
+    return result
