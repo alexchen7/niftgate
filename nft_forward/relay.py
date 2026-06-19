@@ -8,7 +8,7 @@ from pathlib import Path
 from .config import Settings
 from .constants import DEFAULT_RULESET
 from .geo import GeoLookup
-from .iputil import normalize_ip, normalize_network
+from .iputil import contains_ip, normalize_ip, normalize_network
 from .nft import write_and_apply
 from .state import State
 
@@ -74,6 +74,7 @@ def ingest_source(
             isp=geo.isp,
         )
         if ok and apply_rules:
+            state.set_meta("apply_pending", "1")
             apply_state(settings, state, f"ingest:{channel}")
         return ok
     finally:
@@ -134,9 +135,17 @@ def record_block_line(settings: Settings, line: str) -> bool:
     ip = src.group(1)
     lport = int(dpt.group(1))
     protocol = proto.group(1) if proto else "UNKNOWN"
-    geo = GeoLookup(settings).lookup(ip)
     state = state_for(settings)
     try:
+        if _blocked_ip_is_allowed_by_state(state, ip, lport):
+            state.audit("allowed_source_blocked_by_stale_live_nft", source_ip=ip, proto=protocol, lport=lport)
+            state.set_meta("apply_pending", "1")
+            try:
+                apply_state(settings, state, "repair-stale-live-nft")
+                return True
+            except Exception:
+                pass
+        geo = GeoLookup(settings).lookup(ip)
         state.record_block(ip, protocol, lport, geo.geo, geo.isp)
         if settings.paths:
             from .logging_util import append_jsonl
@@ -148,6 +157,15 @@ def record_block_line(settings: Settings, line: str) -> bool:
         return True
     finally:
         state.close()
+
+
+def _blocked_ip_is_allowed_by_state(state: State, ip: str, lport: int) -> bool:
+    rule = state.rule_by_lport(lport)
+    if not rule:
+        return False
+    if rule.open_access:
+        return True
+    return any(contains_ip(source, ip) for source in state.effective_sources_for_rule(rule))
 
 
 def status(settings: Settings) -> dict[str, object]:
