@@ -14,7 +14,7 @@ from nft_forward.geo import GeoInfo, GeoLookup
 from nft_forward.iputil import collapse_sources_for_nft, normalize_network, normalize_sources
 from nft_forward.nft import render_nft, validate_nft, write_and_apply
 from nft_forward.phone_server import _RECENT_HITS, _RECENT_HITS_LOCK, accept_hit
-from nft_forward.relay import ingest_source, retry_pending_apply
+from nft_forward.relay import ingest_source, record_block_line, retry_pending_apply
 from nft_forward.sshutil import build_ssh_command, ssh_command
 from nft_forward.state import State
 
@@ -148,6 +148,28 @@ class CoreTests(unittest.TestCase):
                 self.assertTrue(retry_pending_apply(settings))
 
             state = State(paths.state_db)
+            self.assertEqual(state.get_meta("apply_pending"), "0")
+            state.close()
+
+    def test_block_log_repairs_stale_live_when_state_allows(self) -> None:
+        with self.tempdir() as td:
+            paths = default_paths(Path(td))
+            paths.state_db = Path(td) / "state.db"
+            paths.audit_log = Path(td) / "audit.jsonl"
+            paths.nft_conf = Path(td) / "port-forward.conf"
+            settings = Settings(paths=paths)
+            state = State(paths.state_db, paths.audit_log)
+            state.add_rule(24678, "203.0.113.20", 24678)
+            state.add_allow("public", "39.144.55.0/24", "ssh_login", 24)
+            state.close()
+
+            line = "SRC=39.144.55.66 DST=10.100.129.161 PROTO=TCP SPT=9742 DPT=24678"
+            with patch("nft_forward.relay.write_and_apply", return_value="ok") as apply:
+                self.assertTrue(record_block_line(settings, line))
+
+            apply.assert_called_once()
+            state = State(paths.state_db)
+            self.assertEqual(state.blocked(limit=10), [])
             self.assertEqual(state.get_meta("apply_pending"), "0")
             state.close()
 
