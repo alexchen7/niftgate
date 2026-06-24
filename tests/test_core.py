@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import json
 import subprocess
+import socket
 import tempfile
 import unittest
 from pathlib import Path
@@ -14,7 +15,7 @@ from nft_forward.geo import GeoInfo, GeoLookup
 from nft_forward.iputil import collapse_sources_for_nft, normalize_network, normalize_sources
 from nft_forward.nft import render_nft, validate_nft, write_and_apply
 from nft_forward.phone_server import _RECENT_HITS, _RECENT_HITS_LOCK, accept_hit
-from nft_forward.relay import ingest_source, record_block_line, retry_pending_apply
+from nft_forward.relay import ingest_source, record_block_line, retry_pending_apply, sync_ddns
 from nft_forward.sshutil import build_ssh_command, ssh_command
 from nft_forward.state import State
 
@@ -48,7 +49,7 @@ class CoreTests(unittest.TestCase):
             state = State(paths.state_db)
             state.add_rule(60001, "203.0.113.10", 60001)
             text = render_nft(settings, state)
-            self.assertIn("当前没有有效允许来源", text)
+            self.assertIn("褰撳墠娌℃湁鏈夋晥鍏佽鏉ユ簮", text)
             self.assertIn("tcp dport 60001", text)
             state.close()
 
@@ -149,6 +150,50 @@ class CoreTests(unittest.TestCase):
 
             state = State(paths.state_db)
             self.assertEqual(state.get_meta("apply_pending"), "0")
+            state.close()
+
+    def test_add_allow_duplicate_active_source_does_not_request_apply(self) -> None:
+        with self.tempdir() as td:
+            state = State(Path(td) / "state.db")
+            self.assertTrue(state.add_allow("public", "198.51.100.0/24", "ddns", 24, note="DDNS home.example.com"))
+            self.assertFalse(state.add_allow("public", "198.51.100.0/24", "ddns", 24, note="DDNS home.example.com"))
+            self.assertEqual([entry.source for entry in state.active_allow_entries()], ["198.51.100.0/24"])
+            state.close()
+
+    def test_sync_ddns_skips_nft_apply_when_source_already_active(self) -> None:
+        with self.tempdir() as td:
+            paths = default_paths(Path(td))
+            paths.state_db = Path(td) / "state.db"
+            paths.audit_log = Path(td) / "audit.jsonl"
+            paths.nft_conf = Path(td) / "port-forward.conf"
+            paths.config_file = Path(td) / "config.json"
+            paths.config_file.write_text(
+                json.dumps(
+                    {
+                        "paths": {
+                            "state_db": str(paths.state_db),
+                            "audit_log": str(paths.audit_log),
+                            "nft_conf": str(paths.nft_conf),
+                        },
+                        "ddns": [{"host": "home.example.com", "ruleset": "public", "enabled": True}],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            settings = load_settings(paths.config_file)
+            addrinfo = [(socket.AF_INET, socket.SOCK_STREAM, 0, "", ("198.51.100.8", 0))]
+
+            with patch("nft_forward.relay.socket.getaddrinfo", return_value=addrinfo), patch(
+                "nft_forward.relay.GeoLookup.lookup", return_value=GeoInfo(geo="Testland", isp="Test ISP")
+            ), patch("nft_forward.relay.write_and_apply", return_value="ok") as apply:
+                self.assertEqual(sync_ddns(settings), 1)
+                self.assertEqual(sync_ddns(settings), 0)
+
+            apply.assert_called_once()
+            state = State(paths.state_db)
+            entries = state.active_allow_entries()
+            self.assertEqual(len(entries), 1)
+            self.assertEqual(entries[0].source, "198.51.100.0/24")
             state.close()
 
     def test_block_log_repairs_stale_live_when_state_allows(self) -> None:
