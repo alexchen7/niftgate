@@ -335,6 +335,14 @@ class State:
             self.audit("allow_rejected_attack_mode", ruleset=ruleset, source=source, channel=channel)
             return False
         created = utc_now()
+        existing = self.conn.execute(
+            "SELECT expires_at FROM allow_entries WHERE ruleset=? AND source=? AND channel=?",
+            (ruleset, source, channel),
+        ).fetchone()
+        was_active = False
+        if existing:
+            expires_at = existing["expires_at"]
+            was_active = expires_at is None or int(expires_at) > created
         is_manual = channel == "manual" if manual is None else manual
         expires = None if is_manual else created + ttl_days * 86400
         self.conn.execute(
@@ -350,8 +358,19 @@ class State:
             (ruleset, source, channel, prefix_len, note, geo, isp, created, expires),
         )
         self.conn.commit()
-        self.audit("allow_upserted", ruleset=ruleset, source=source, channel=channel, prefix_len=prefix_len, geo=geo, isp=isp, expires_at=expires)
-        return True
+        activates_source = not was_active
+        self.audit(
+            "allow_upserted",
+            ruleset=ruleset,
+            source=source,
+            channel=channel,
+            prefix_len=prefix_len,
+            geo=geo,
+            isp=isp,
+            expires_at=expires,
+            activates_source=activates_source,
+        )
+        return activates_source
 
     def remove_allow(self, entry_id: int) -> bool:
         cur = self.conn.execute("DELETE FROM allow_entries WHERE id=?", (entry_id,))
