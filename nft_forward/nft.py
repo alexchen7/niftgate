@@ -136,6 +136,32 @@ def validate_nft(text: str) -> tuple[bool, str]:
             pass
 
 
+def table_exists(table_name: str) -> bool:
+    try:
+        proc = subprocess.run(
+            ["nft", "list", "table", "ip", table_name],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=5,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    return proc.returncode == 0
+
+
+def run_nft_batch(text: str) -> subprocess.CompletedProcess[str]:
+    with tempfile.NamedTemporaryFile("w", encoding="utf-8", delete=False) as fh:
+        fh.write(text)
+        tmp = fh.name
+    try:
+        return subprocess.run(["nft", "-f", tmp], text=True, capture_output=True, timeout=10)
+    finally:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+
+
 def write_and_apply(settings: Settings, state: State, apply: bool = True) -> str:
     if not settings.paths:
         raise RuntimeError("settings paths not loaded")
@@ -148,12 +174,13 @@ def write_and_apply(settings: Settings, state: State, apply: bool = True) -> str
     tmp.write_text(text, encoding="utf-8")
     tmp.replace(settings.paths.nft_conf)
     if apply and shutil.which("nft"):
-        subprocess.run(["nft", "flush", "table", "ip", TABLE_NAME], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        subprocess.run(["nft", "delete", "table", "ip", TABLE_NAME], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        apply_text = text
+        if table_exists(TABLE_NAME):
+            apply_text = f"flush table ip {TABLE_NAME}\n" + text
+        proc = run_nft_batch(apply_text)
+        if proc.returncode != 0:
+            raise RuntimeError(proc.stderr.strip() or "nft apply failed")
         for legacy_table in LEGACY_TABLE_NAMES:
             subprocess.run(["nft", "flush", "table", "ip", legacy_table], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
             subprocess.run(["nft", "delete", "table", "ip", legacy_table], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        proc = subprocess.run(["nft", "-f", str(settings.paths.nft_conf)], text=True, capture_output=True, timeout=10)
-        if proc.returncode != 0:
-            raise RuntimeError(proc.stderr.strip() or "nft apply failed")
     return message or "ok"
