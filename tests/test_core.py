@@ -49,7 +49,7 @@ class CoreTests(unittest.TestCase):
             state = State(paths.state_db)
             state.add_rule(60001, "203.0.113.10", 60001)
             text = render_nft(settings, state)
-            self.assertIn("褰撳墠娌℃湁鏈夋晥鍏佽鏉ユ簮", text)
+            self.assertIn("当前没有有效允许来源", text)
             self.assertIn("tcp dport 60001", text)
             state.close()
 
@@ -105,14 +105,20 @@ class CoreTests(unittest.TestCase):
             settings = Settings(paths=paths)
             state = State(paths.state_db)
             calls: list[list[str]] = []
+            apply_batches: list[str] = []
 
             def fake_run(cmd, **kwargs):  # noqa: ANN001, ANN202
                 calls.append(list(cmd))
+                if list(cmd[:2]) == ["nft", "-f"]:
+                    apply_batches.append(Path(cmd[-1]).read_text(encoding="utf-8"))
                 return subprocess.CompletedProcess(cmd, 0, "", "")
 
             with patch("nft_forward.nft.shutil.which", return_value="/usr/sbin/nft"), patch("nft_forward.nft.subprocess.run", fake_run):
                 write_and_apply(settings, state, apply=True)
             self.assertIn(["nft", "delete", "table", "ip", "port_forward"], calls)
+            self.assertIn(["nft", "list", "table", "ip", "nft_forward"], calls)
+            self.assertNotIn(["nft", "delete", "table", "ip", "nft_forward"], calls)
+            self.assertTrue(any(batch.startswith("flush table ip nft_forward\n") for batch in apply_batches))
             state.close()
 
     def test_ingest_marks_pending_apply_on_reload_failure(self) -> None:
