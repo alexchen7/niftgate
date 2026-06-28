@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import contextlib
 import os
 import shutil
 import subprocess
@@ -162,25 +163,71 @@ def run_nft_batch(text: str) -> subprocess.CompletedProcess[str]:
             pass
 
 
+@contextlib.contextmanager
+def apply_lock(settings: Settings):
+    if not settings.paths:
+        yield
+        return
+    lock_path = settings.paths.state_db.parent / "apply.lock"
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    with lock_path.open("a+") as lock_file:
+        try:
+            import fcntl
+
+            fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
+        except (ImportError, OSError):
+            pass
+        try:
+            yield
+        finally:
+            try:
+                import fcntl
+
+                fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+            except (ImportError, OSError):
+                pass
+
+
+def write_config_atomically(path: Path, text: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp_name = ""
+    try:
+        with tempfile.NamedTemporaryFile(
+            "w",
+            encoding="utf-8",
+            dir=str(path.parent),
+            prefix=f".{path.name}.",
+            suffix=".tmp",
+            delete=False,
+        ) as fh:
+            fh.write(text)
+            tmp_name = fh.name
+        os.replace(tmp_name, path)
+    finally:
+        if tmp_name:
+            try:
+                os.unlink(tmp_name)
+            except FileNotFoundError:
+                pass
+
+
 def write_and_apply(settings: Settings, state: State, apply: bool = True) -> str:
     if not settings.paths:
         raise RuntimeError("settings paths not loaded")
-    text = render_nft(settings, state)
-    ok, message = validate_nft(text)
-    if not ok:
-        raise RuntimeError(f"nft validation failed: {message}")
-    settings.paths.nft_conf.parent.mkdir(parents=True, exist_ok=True)
-    tmp = settings.paths.nft_conf.with_suffix(".tmp")
-    tmp.write_text(text, encoding="utf-8")
-    tmp.replace(settings.paths.nft_conf)
-    if apply and shutil.which("nft"):
-        apply_text = text
-        if table_exists(TABLE_NAME):
-            apply_text = f"flush table ip {TABLE_NAME}\n" + text
-        proc = run_nft_batch(apply_text)
-        if proc.returncode != 0:
-            raise RuntimeError(proc.stderr.strip() or "nft apply failed")
-        for legacy_table in LEGACY_TABLE_NAMES:
-            subprocess.run(["nft", "flush", "table", "ip", legacy_table], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-            subprocess.run(["nft", "delete", "table", "ip", legacy_table], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    return message or "ok"
+    with apply_lock(settings):
+        text = render_nft(settings, state)
+        ok, message = validate_nft(text)
+        if not ok:
+            raise RuntimeError(f"nft validation failed: {message}")
+        write_config_atomically(settings.paths.nft_conf, text)
+        if apply and shutil.which("nft"):
+            apply_text = text
+            if table_exists(TABLE_NAME):
+                apply_text = f"flush table ip {TABLE_NAME}\n" + text
+            proc = run_nft_batch(apply_text)
+            if proc.returncode != 0:
+                raise RuntimeError(proc.stderr.strip() or "nft apply failed")
+            for legacy_table in LEGACY_TABLE_NAMES:
+                subprocess.run(["nft", "flush", "table", "ip", legacy_table], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                subprocess.run(["nft", "delete", "table", "ip", legacy_table], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        return message or "ok"
