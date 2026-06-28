@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import re
 import socket
+import time
 from pathlib import Path
 
 from .config import Settings
@@ -139,12 +140,16 @@ def record_block_line(settings: Settings, line: str) -> bool:
     try:
         if _blocked_ip_is_allowed_by_state(state, ip, lport):
             state.audit("allowed_source_blocked_by_stale_live_nft", source_ip=ip, proto=protocol, lport=lport)
-            state.set_meta("apply_pending", "1")
-            try:
-                apply_state(settings, state, "repair-stale-live-nft")
+            if _stale_live_repair_due(state):
+                state.set_meta("apply_pending", "1")
+                try:
+                    apply_state(settings, state, "repair-stale-live-nft")
+                    return True
+                except Exception:
+                    pass
+            else:
+                state.audit("stale_live_repair_throttled", source_ip=ip, proto=protocol, lport=lport)
                 return True
-            except Exception:
-                pass
         geo = GeoLookup(settings).lookup(ip)
         state.record_block(ip, protocol, lport, geo.geo, geo.isp)
         if settings.paths:
@@ -158,6 +163,17 @@ def record_block_line(settings: Settings, line: str) -> bool:
     finally:
         state.close()
 
+
+def _stale_live_repair_due(state: State, interval: int = 30) -> bool:
+    now = time.time()
+    try:
+        last = float(state.get_meta("last_stale_live_repair_at", "0") or 0)
+    except ValueError:
+        last = 0
+    if now - last < interval:
+        return False
+    state.set_meta("last_stale_live_repair_at", str(int(now)))
+    return True
 
 def _blocked_ip_is_allowed_by_state(state: State, ip: str, lport: int) -> bool:
     rule = state.rule_by_lport(lport)
