@@ -117,8 +117,8 @@ class CoreTests(unittest.TestCase):
                 write_and_apply(settings, state, apply=True)
             self.assertIn(["nft", "delete", "table", "ip", "port_forward"], calls)
             self.assertIn(["nft", "list", "table", "ip", "nft_forward"], calls)
-            self.assertNotIn(["nft", "delete", "table", "ip", "nft_forward"], calls)
-            self.assertTrue(any(batch.startswith("flush table ip nft_forward\n") for batch in apply_batches))
+            self.assertNotIn(["nft", "flush", "table", "ip", "nft_forward"], calls)
+            self.assertTrue(any(batch.startswith("delete table ip nft_forward\n") for batch in apply_batches))
             state.close()
 
     def test_ingest_marks_pending_apply_on_reload_failure(self) -> None:
