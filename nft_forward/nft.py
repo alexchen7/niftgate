@@ -223,7 +223,7 @@ def write_and_apply(settings: Settings, state: State, apply: bool = True) -> str
         if apply and shutil.which("nft"):
             apply_text = text
             if table_exists(TABLE_NAME):
-                apply_text = f"flush table ip {TABLE_NAME}\n" + text
+                apply_text = f"delete table ip {TABLE_NAME}\n" + text
             proc = run_nft_batch(apply_text)
             if proc.returncode != 0:
                 raise RuntimeError(proc.stderr.strip() or "nft apply failed")
