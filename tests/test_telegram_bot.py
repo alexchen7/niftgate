@@ -346,5 +346,24 @@ class TelegramBotTests(unittest.TestCase):
         self.assertIn(["ruleset", "delete", "ddns"], calls)
 
 
+    def test_text_command_error_paths_do_not_shadow_translator(self) -> None:
+        with patch.object(telegram_bot, "relay_args", return_value=(False, "offline")):
+            self.assertIn("relay error: offline", telegram_bot.handle_command(settings(), "/status"))
+        self.assertIn("unknown or malformed", telegram_bot.handle_command(settings(), "/unknown"))
+        self.assertEqual(telegram_bot.handle_command(settings(), "   "), "empty command")
+
+    def test_empty_admin_list_denies_all_and_bot_refuses_to_start(self) -> None:
+        unsecured = settings()
+        unsecured.telegram_token = "test-token"
+        self.assertFalse(telegram_bot.authorized(unsecured, 123))
+        with patch.object(telegram_bot, "load_settings", return_value=unsecured):
+            with self.assertRaises(SystemExit):
+                telegram_bot.run()
+        secured = settings()
+        secured.telegram_admin_ids = [123]
+        self.assertTrue(telegram_bot.authorized(secured, 123))
+        self.assertFalse(telegram_bot.authorized(secured, 456))
+
+
 if __name__ == "__main__":
     unittest.main()

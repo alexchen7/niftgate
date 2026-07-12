@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ipaddress
 import json
 import threading
 import time
@@ -13,6 +14,23 @@ from .exitnode import enqueue_relay, state_for, sync_from_relay
 HIT_DEDUP_SECONDS = 10
 _RECENT_HITS: dict[tuple[int, str], float] = {}
 _RECENT_HITS_LOCK = threading.Lock()
+
+
+def source_ip_for_request(handler: BaseHTTPRequestHandler, bind_address: str) -> str | None:
+    peer_ip = str(handler.client_address[0]).strip()
+    candidate = peer_ip
+    try:
+        peer = ipaddress.ip_address(peer_ip)
+        bound = ipaddress.ip_address(bind_address)
+    except ValueError:
+        return None
+    if peer.is_loopback and bound.is_loopback:
+        candidate = (handler.headers.get("X-Real-IP") or peer_ip).strip()
+    try:
+        address = ipaddress.ip_address(candidate)
+    except ValueError:
+        return None
+    return str(address) if address.version == 4 else None
 
 
 def accept_hit(url_id: int, source_ip: str) -> bool:
@@ -46,9 +64,11 @@ class PhoneHandler(BaseHTTPRequestHandler):
             self.send_response(404)
             self.end_headers()
             return
-        source_ip = self.headers.get("X-Real-IP") or self.headers.get("X-Forwarded-For", "").split(",")[0].strip()
+        source_ip = source_ip_for_request(self, settings.phone_bind)
         if not source_ip:
-            source_ip = self.client_address[0]
+            self.send_response(400)
+            self.end_headers()
+            return
         note = f"secret-url:{url.label or url.id}"
         queued = False
         if accept_hit(url.id, source_ip):

@@ -17,7 +17,7 @@ from .config import load_settings, write_example_config
 from .constants import DEFAULT_RULESET, RESERVED_PORTS
 from .exitnode import online_geo_command, queue_worker, sync_from_relay
 from .geo import GeoLookup
-from .iputil import normalize_sources
+from .iputil import normalize_ip, normalize_sources
 from .legacy import import_legacy_conf
 from .nft import render_nft, write_and_apply
 from .phone_server import run as run_phone
@@ -72,7 +72,9 @@ def clean_ddns_host(host: str) -> str:
 
 def ddns_entries(data: dict[str, Any]) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
+    used_ids: set[int] = set()
     for item in data.get("ddns", []):
+        row_id: int | None = None
         if isinstance(item, str):
             host = item
             ruleset = DEFAULT_RULESET
@@ -81,15 +83,25 @@ def ddns_entries(data: dict[str, Any]) -> list[dict[str, Any]]:
             host = item.get("host", "")
             ruleset = item.get("ruleset") or DEFAULT_RULESET
             enabled = bool(item.get("enabled", True))
+            try:
+                candidate = int(item.get("id", 0))
+                row_id = candidate if candidate > 0 and candidate not in used_ids else None
+            except (TypeError, ValueError):
+                row_id = None
         else:
             continue
         try:
             clean_host = clean_ddns_host(host)
         except ValueError:
             continue
+        if row_id is None:
+            row_id = 1
+            while row_id in used_ids:
+                row_id += 1
+        used_ids.add(row_id)
         rows.append(
             {
-                "id": len(rows) + 1,
+                "id": row_id,
                 "host": clean_host,
                 "ruleset": str(ruleset or DEFAULT_RULESET),
                 "enabled": enabled,
@@ -97,10 +109,14 @@ def ddns_entries(data: dict[str, Any]) -> list[dict[str, Any]]:
         )
     return rows
 
-
 def set_ddns_entries(data: dict[str, Any], rows: list[dict[str, Any]]) -> None:
     data["ddns"] = [
-        {"host": row["host"], "ruleset": row.get("ruleset") or DEFAULT_RULESET, "enabled": bool(row.get("enabled", True))}
+        {
+            "id": int(row["id"]),
+            "host": row["host"],
+            "ruleset": row.get("ruleset") or DEFAULT_RULESET,
+            "enabled": bool(row.get("enabled", True)),
+        }
         for row in rows
     ]
 
@@ -185,7 +201,7 @@ def cmd_import_legacy(args: argparse.Namespace) -> int:
     settings = load_settings(args.config)
     state = state_for(settings)
     try:
-        count = import_legacy_conf(Path(args.path or settings.paths.nft_conf), state)
+        count = import_legacy_conf(Path(args.path or settings.paths.nft_conf), state, settings.reserved_ports)
         print(f"imported {count} forwarding rules")
     finally:
         state.close()
@@ -270,7 +286,7 @@ def cmd_ruleset(args: argparse.Namespace) -> int:
                     if row["ruleset"] in names:
                         removed_ddns += 1
                     else:
-                        kept.append({**row, "id": len(kept) + 1})
+                        kept.append(row)
                 if removed_ddns:
                     set_ddns_entries(data, kept)
                     write_config_json(settings, data)
@@ -418,9 +434,12 @@ def cmd_remove_allow(args: argparse.Namespace) -> int:
         token = str(args.id_or_source)
         if args.ruleset or not token.isdigit():
             ruleset = args.ruleset or DEFAULT_RULESET
-            policy = int(args.prefix) if args.prefix else state.ruleset_prefix(ruleset, "manual")
-            sources = [spec.text for spec in normalize_sources(token, host_policy=policy)]
-            count = state.remove_allow_sources(ruleset, sources, channel=args.channel)
+            if not args.prefix and "/" not in token and "-" not in token:
+                count = state.remove_allow_containing_ip(ruleset, normalize_ip(token), channel=args.channel)
+            else:
+                policy = int(args.prefix) if args.prefix else None
+                sources = [spec.text for spec in normalize_sources(token, host_policy=policy)]
+                count = state.remove_allow_sources(ruleset, sources, channel=args.channel)
             if args.apply:
                 write_and_apply(settings, state, apply=True)
             print(f"removed entries: {count}")
@@ -501,7 +520,7 @@ def cmd_ddns(args: argparse.Namespace) -> int:
                 write_config_json(settings, data)
                 print_json(row)
                 return 0
-        row = {"id": len(rows) + 1, "host": host, "ruleset": ruleset, "enabled": True}
+        row = {"id": max((int(item["id"]) for item in rows), default=0) + 1, "host": host, "ruleset": ruleset, "enabled": True}
         rows.append(row)
         set_ddns_entries(data, rows)
         write_config_json(settings, data)
@@ -523,7 +542,7 @@ def cmd_ddns(args: argparse.Namespace) -> int:
             if selected:
                 removed_pairs.append((row["host"], row["ruleset"]))
             else:
-                kept.append({**row, "id": len(kept) + 1})
+                kept.append(row)
         set_ddns_entries(data, kept)
         write_config_json(settings, data)
         removed_allow = 0
@@ -668,6 +687,10 @@ def cmd_export(args: argparse.Namespace) -> int:
 def cmd_import(args: argparse.Namespace) -> int:
     settings = load_settings(args.config)
     payload = json.loads(Path(args.file).read_text(encoding="utf-8"))
+    imported_ports = {int(row["lport"]) for row in payload.get("forward_rules", [])}
+    forbidden = sorted(imported_ports & settings.reserved_ports)
+    if forbidden:
+        raise SystemExit(f"refusing reserved relay ports in import: {', '.join(str(port) for port in forbidden)}")
     state = state_for(settings)
     try:
         if args.replace:

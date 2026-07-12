@@ -90,42 +90,57 @@ def sync_ddns(settings: Settings, apply_rules: bool = True) -> int:
         return 0
     data = json.loads(Path(cfg_path).read_text(encoding="utf-8"))
     entries = data.get("ddns", [])
+    state = state_for(settings)
     changed = 0
-    for item in entries:
-        if isinstance(item, str):
-            host = item
-            ruleset = DEFAULT_RULESET
-            enabled = True
-        elif isinstance(item, dict):
-            host = item.get("host")
-            ruleset = item.get("ruleset", DEFAULT_RULESET)
-            enabled = bool(item.get("enabled", True))
-        else:
-            continue
-        if not host:
-            continue
-        if not enabled:
-            continue
-        old_timeout = socket.getdefaulttimeout()
-        socket.setdefaulttimeout(settings.ddns_timeout)
-        try:
-            infos = socket.getaddrinfo(host, None, socket.AF_INET, socket.SOCK_STREAM)
-        except OSError:
-            continue
-        finally:
-            socket.setdefaulttimeout(old_timeout)
-        ips = sorted({info[4][0] for info in infos})
-        for ip in ips:
-            if ingest_source(settings, "ddns", ip, ruleset=ruleset, note=f"DDNS {host}", apply_rules=False):
-                changed += 1
-    if changed and apply_rules:
-        state = state_for(settings)
-        try:
+    try:
+        if state.mode() == "attack":
+            return 0
+        for item in entries:
+            if isinstance(item, str):
+                host = item
+                ruleset = DEFAULT_RULESET
+                enabled = True
+            elif isinstance(item, dict):
+                host = item.get("host")
+                ruleset = item.get("ruleset", DEFAULT_RULESET)
+                enabled = bool(item.get("enabled", True))
+            else:
+                continue
+            if not host or not enabled:
+                continue
+            old_timeout = socket.getdefaulttimeout()
+            socket.setdefaulttimeout(settings.ddns_timeout)
+            try:
+                infos = socket.getaddrinfo(host, None, socket.AF_INET, socket.SOCK_STREAM)
+            except OSError:
+                continue
+            finally:
+                socket.setdefaulttimeout(old_timeout)
+            ips = sorted({info[4][0] for info in infos})
+            try:
+                prefix = state.ruleset_prefix(ruleset, "ddns")
+            except ValueError:
+                continue
+            current_sources = {
+                normalize_network(ip, host_policy=prefix).text
+                for ip in ips
+            }
+            for ip in ips:
+                if ingest_source(
+                    settings,
+                    "ddns",
+                    ip,
+                    ruleset=ruleset,
+                    note=f"DDNS {host}",
+                    apply_rules=False,
+                ):
+                    changed += 1
+            changed += state.reconcile_ddns_allow_entries(host, ruleset, current_sources)
+        if changed and apply_rules:
             apply_state(settings, state, "sync-ddns")
-        finally:
-            state.close()
-    return changed
-
+        return changed
+    finally:
+        state.close()
 
 def record_block_line(settings: Settings, line: str) -> bool:
     src = re.search(r"\bSRC=([0-9.]+)", line)

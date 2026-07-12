@@ -133,7 +133,7 @@ def answer_callback(settings: Settings, callback_id: str, text: str = "") -> Non
 
 
 def authorized(settings: Settings, chat_id: int) -> bool:
-    return not settings.telegram_admin_ids or chat_id in settings.telegram_admin_ids
+    return bool(settings.telegram_admin_ids) and chat_id in settings.telegram_admin_ids
 
 
 def keyboard(rows: list[list[tuple[str, str]]]) -> dict[str, Any]:
@@ -939,8 +939,8 @@ def handle_pending(settings: Settings, chat_id: int, message_text: str) -> tuple
     return text(settings, "Unknown pending action.", "未知待处理操作。"), manage_keyboard(settings)
 
 
-def handle_command(settings: Settings, text: str) -> str:
-    parts = text.strip().split()
+def handle_command(settings: Settings, command_text: str) -> str:
+    parts = command_text.strip().split()
     if not parts:
         return text(settings, "empty command", "空命令")
     cmd = parts[0].lower()
@@ -1263,6 +1263,10 @@ def handle_message(settings: Settings, chat_id: int, message_text: str) -> tuple
 
 def run() -> None:
     settings = load_settings()
+    if not settings.telegram_token:
+        raise SystemExit("telegram token is not configured")
+    if not settings.telegram_admin_ids:
+        raise SystemExit("telegram admin_ids is empty; refusing to start an unauthenticated control bot")
     offset = 0
     backoff = 2
     while True:
