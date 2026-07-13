@@ -6,6 +6,7 @@ import socket
 import time
 from pathlib import Path
 
+from . import __version__
 from .config import Settings
 from .constants import DEFAULT_RULESET
 from .geo import GeoLookup
@@ -203,6 +204,7 @@ def status(settings: Settings) -> dict[str, object]:
     state = state_for(settings)
     try:
         return {
+            "version": __version__,
             "mode": state.mode(),
             "rules": len(state.rules()),
             "active_allow_entries": len(state.active_allow_entries()),
@@ -219,6 +221,7 @@ def bot_status(settings: Settings) -> dict[str, object]:
     try:
         rulesets = [row for row in state.rulesets() if row["name"] != DEFAULT_RULESET]
         return {
+            "version": __version__,
             "mode": state.mode(),
             "allow": len(state.active_allow_entries()),
             "rules": len(state.rules()),

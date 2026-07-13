@@ -10,6 +10,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
+from nft_forward import __version__
 from nft_forward.config import Settings, clean_secret_path, default_paths, load_settings
 from nft_forward.cli import export_payload, main as cli_main, migrate_secret_path
 from nft_forward.geo import GeoInfo, GeoLookup
@@ -17,7 +18,7 @@ from nft_forward.iputil import collapse_sources_for_nft, normalize_ip, normalize
 from nft_forward.legacy import import_legacy_conf
 from nft_forward.nft import render_nft, validate_nft, write_and_apply
 from nft_forward.phone_server import _RECENT_HITS, _RECENT_HITS_LOCK, accept_hit, source_ip_for_request
-from nft_forward.relay import ingest_source, record_block_line, retry_pending_apply, sync_ddns
+from nft_forward.relay import bot_status, ingest_source, record_block_line, retry_pending_apply, sync_ddns
 from nft_forward.sshutil import build_ssh_command, ssh_command
 from nft_forward.state import State
 
@@ -27,6 +28,13 @@ class CoreTests(unittest.TestCase):
         root = Path(os.environ.get("NFT_FORWARD_TEST_TMP", str(Path.cwd() / ".tmp-tests")))
         root.mkdir(exist_ok=True)
         return tempfile.TemporaryDirectory(dir=root)
+
+    def test_bot_status_reports_version(self) -> None:
+        with self.tempdir() as td:
+            paths = default_paths(Path(td))
+            paths.state_db = Path(td) / "state.db"
+            result = bot_status(Settings(paths=paths))
+            self.assertEqual(result["version"], __version__)
 
     def test_ip_normalization(self) -> None:
         self.assertEqual(normalize_network("1.2.3.4").text, "1.2.3.4/32")

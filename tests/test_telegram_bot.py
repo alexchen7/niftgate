@@ -5,7 +5,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from nft_forward import telegram_bot
+from nft_forward import __version__, telegram_bot
 from nft_forward.config import Settings, default_paths
 
 
@@ -25,7 +25,9 @@ class TelegramBotTests(unittest.TestCase):
         def _fake(_settings: Settings, args: list[str]) -> tuple[bool, str]:
             calls.append(args)
             if args == ["bot-status"]:
-                return True, json.dumps({"mode": "regular", "allow": 2, "rules": 1, "rulesets": 1, "blocked": 1})
+                return True, json.dumps(
+                    {"version": __version__, "mode": "regular", "allow": 2, "rules": 1, "rulesets": 1, "blocked": 1}
+                )
             if args == ["status"]:
                 return True, json.dumps({"mode": "regular", "active_allow_entries": 2, "rules": 1, "blocked_visible": 1})
             if args == ["allow-list"]:
@@ -203,13 +205,39 @@ class TelegramBotTests(unittest.TestCase):
         with patch.object(telegram_bot, "relay_args", self.fake_relay(calls)):
             text, markup = telegram_bot.render_status_menu(settings())
         self.assertIn("Mode: regular", text)
+        self.assertIn(f"Exit / Telegram: v{__version__}", text)
+        self.assertIn(f"Relay: v{__version__}", text)
         self.assertIn("Relay SSH:", text)
         labels = [button["text"] for row in markup["inline_keyboard"] for button in row]
         self.assertIn("Whitelisted IPs (2)", labels)
         self.assertIn("Forwarding Rules (1)", labels)
         self.assertIn("Custom Rule Sets (1)", labels)
         self.assertIn("Blocked IPs (1)", labels)
+        self.assertIn("Version", labels)
         self.assertEqual(calls, [["bot-status"]])
+
+    def test_version_detail_reports_match_and_mismatch(self) -> None:
+        calls: list[list[str]] = []
+        with patch.object(telegram_bot, "relay_args", self.fake_relay(calls)):
+            detail = telegram_bot.render_status_detail(settings(), "version")
+        self.assertIn(f"Exit / Telegram: v{__version__}", detail)
+        self.assertIn(f"Relay: v{__version__}", detail)
+        self.assertIn("Versions match.", detail)
+
+        def old_relay(_settings: Settings, args: list[str]) -> tuple[bool, str]:
+            self.assertEqual(args, ["bot-status"])
+            return True, json.dumps({"version": "0.2.0"})
+
+        with patch.object(telegram_bot, "relay_args", old_relay):
+            detail = telegram_bot.render_status_detail(settings(), "version")
+        self.assertIn("Relay: v0.2.0", detail)
+        self.assertIn("Version mismatch", detail)
+
+    def test_version_detail_supports_older_relay(self) -> None:
+        with patch.object(telegram_bot, "relay_args", return_value=(True, json.dumps({"mode": "regular"}))):
+            detail = telegram_bot.render_status_detail(settings(), "version")
+        self.assertIn("Relay: unknown", detail)
+        self.assertIn("Upgrade the relay", detail)
 
     def test_status_menu_shows_timeout(self) -> None:
         calls: list[list[str]] = []
@@ -228,11 +256,14 @@ class TelegramBotTests(unittest.TestCase):
         with patch.object(telegram_bot, "relay_args", self.fake_relay(calls)):
             text, markup = telegram_bot.render_status_menu(zh_settings())
         self.assertIn("当前模式：regular", text)
+        self.assertIn(f"出口端 / Telegram：v{__version__}", text)
+        self.assertIn(f"中继端：v{__version__}", text)
         labels = [button["text"] for row in markup["inline_keyboard"] for button in row]
         self.assertIn("白名单 IP (2)", labels)
         self.assertIn("转发规则 (1)", labels)
         self.assertIn("自定义规则集 (1)", labels)
         self.assertIn("拦截 IP (1)", labels)
+        self.assertIn("版本", labels)
 
     def test_menu_command_does_not_shadow_translator(self) -> None:
         text, markup = telegram_bot.handle_message(zh_settings(), 569088547, "/menu")
