@@ -8,7 +8,11 @@ from pathlib import Path
 from typing import Any, Iterable
 
 from .constants import CHANNELS, DEFAULT_RULESET, DEFAULT_TTL_DAYS
+from .iputil import contains_ip
 from .logging_util import append_jsonl
+
+QUEUE_MAX_ATTEMPTS = 100
+QUEUE_MAX_AGE_SECONDS = 30 * 86400
 
 
 def utc_now() -> int:
@@ -268,6 +272,7 @@ class State:
         include_public: bool = True,
         open_access: bool = False,
     ) -> None:
+        note = " ".join(str(note).splitlines()).strip()
         refs = sorted(set(rulesets or []))
         for ruleset in refs:
             self.ensure_ruleset(ruleset)
@@ -350,6 +355,7 @@ class State:
             INSERT INTO allow_entries(ruleset,source,channel,prefix_len,note,geo,isp,created_at,expires_at)
             VALUES(?,?,?,?,?,?,?,?,?)
             ON CONFLICT(ruleset,source,channel) DO UPDATE SET
+              prefix_len=excluded.prefix_len,
               note=excluded.note,
               geo=excluded.geo,
               isp=excluded.isp,
@@ -401,6 +407,26 @@ class State:
             self.audit("allow_sources_removed", ruleset=ruleset, sources=sources, channel=channel, count=removed)
         return removed
 
+    def remove_allow_containing_ip(self, ruleset: str, ip: str, channel: str | None = None) -> int:
+        params: list[Any] = [ruleset]
+        sql = "SELECT id, source FROM allow_entries WHERE ruleset=?"
+        if channel:
+            sql += " AND channel=?"
+            params.append(channel)
+        ids: list[int] = []
+        for row in self.conn.execute(sql, params):
+            try:
+                if contains_ip(row["source"], ip):
+                    ids.append(int(row["id"]))
+            except ValueError:
+                continue
+        if not ids:
+            return 0
+        self.conn.executemany("DELETE FROM allow_entries WHERE id=?", ((entry_id,) for entry_id in ids))
+        self.conn.commit()
+        self.audit("allow_ip_removed", ruleset=ruleset, ip=ip, channel=channel, count=len(ids))
+        return len(ids)
+
     def remove_ddns_allow_entries(self, pairs: list[tuple[str, str]]) -> int:
         removed = 0
         for host, ruleset in pairs:
@@ -414,6 +440,20 @@ class State:
         if removed:
             self.audit("ddns_allow_removed", count=removed, pairs=pairs)
         return removed
+
+    def reconcile_ddns_allow_entries(self, host: str, ruleset: str, current_sources: set[str]) -> int:
+        note = f"DDNS {host}"
+        rows = self.conn.execute(
+            "SELECT id, source FROM allow_entries WHERE channel='ddns' AND note=? AND ruleset=?",
+            (note, ruleset),
+        ).fetchall()
+        stale_ids = [int(row["id"]) for row in rows if row["source"] not in current_sources]
+        if not stale_ids:
+            return 0
+        self.conn.executemany("DELETE FROM allow_entries WHERE id=?", ((entry_id,) for entry_id in stale_ids))
+        self.conn.commit()
+        self.audit("ddns_stale_removed", host=host, ruleset=ruleset, count=len(stale_ids))
+        return len(stale_ids)
 
     def active_allow_entries(self) -> list[AllowEntry]:
         now = utc_now()
@@ -508,15 +548,27 @@ class State:
         self.conn.execute("DELETE FROM exit_queue WHERE id=?", (qid,))
         self.conn.commit()
 
-    def retry_queue(self, qid: int) -> None:
-        row = self.conn.execute("SELECT attempts FROM exit_queue WHERE id=?", (qid,)).fetchone()
-        attempts = int(row["attempts"]) if row else 0
-        delay = min(3600, 2 ** min(attempts + 1, 10))
+    def retry_queue(self, qid: int) -> bool:
+        row = self.conn.execute(
+            "SELECT attempts, created_at FROM exit_queue WHERE id=?",
+            (qid,),
+        ).fetchone()
+        if not row:
+            return False
+        now = utc_now()
+        next_attempt = int(row["attempts"]) + 1
+        if next_attempt >= QUEUE_MAX_ATTEMPTS or now - int(row["created_at"]) >= QUEUE_MAX_AGE_SECONDS:
+            self.conn.execute("DELETE FROM exit_queue WHERE id=?", (qid,))
+            self.conn.commit()
+            self.audit("exit_queue_discarded", id=qid, attempts=next_attempt)
+            return False
+        delay = min(3600, 2 ** min(next_attempt, 10))
         self.conn.execute(
-            "UPDATE exit_queue SET attempts=attempts+1, next_attempt_at=? WHERE id=?",
-            (utc_now() + delay, qid),
+            "UPDATE exit_queue SET attempts=?, next_attempt_at=? WHERE id=?",
+            (next_attempt, now + delay, qid),
         )
         self.conn.commit()
+        return True
 
     def ensure_secret_url(self, secret_path: str, ruleset: str = DEFAULT_RULESET, label: str = "default") -> SecretURL | None:
         path = secret_path.strip("/")

@@ -2,10 +2,12 @@ from __future__ import annotations
 
 import ipaddress
 import json
+import threading
 import urllib.error
 import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Dict, Tuple
 
 from .config import Settings
 from .sshutil import ssh_command
@@ -29,6 +31,11 @@ GEO_LABELS = {
     "440100": "China/Guangdong/Guangzhou",
     "440300": "China/Guangdong/Shenzhen",
 }
+
+GeoIndex = Dict[Tuple[int, int], Tuple[str, str]]
+_INDEX_CACHE_LOCK = threading.Lock()
+_INDEX_CACHE: dict[str, tuple[tuple[tuple[str, int, int], ...], GeoIndex]] = {}
+
 
 ISP_LABELS = {
     "chinatelecom": "China Telecom",
@@ -54,11 +61,12 @@ class GeoInfo:
 class GeoLookup:
     def __init__(self, settings: Settings):
         self.settings = settings
-        self._index: list[tuple[ipaddress.IPv4Network, str, str]] | None = None
 
     def lookup(self, ip: str, allow_ssh_fallback: bool = True) -> GeoInfo:
         local = self.lookup_local(ip)
-        if allow_ssh_fallback:
+        if allow_ssh_fallback and self.settings.exit_host and (
+            local.geo == "unknown" or local.isp == "unknown"
+        ):
             remote = self.lookup_via_exit(ip)
             if remote.geo != "unknown" or remote.isp != "unknown":
                 return GeoInfo(
@@ -74,21 +82,22 @@ class GeoLookup:
         addr = ipaddress.ip_address(ip)
         if addr.version != 4:
             return GeoInfo()
-        best_geo: tuple[int, str] | None = None
-        best_isp: tuple[int, str] | None = None
-        for network, geo, isp in self._load_index():
-            if addr in network:
-                if geo != "unknown" and (best_geo is None or network.prefixlen > best_geo[0]):
-                    best_geo = (network.prefixlen, geo)
-                if isp != "unknown" and (best_isp is None or network.prefixlen > best_isp[0]):
-                    best_isp = (network.prefixlen, isp)
-        if best_geo or best_isp:
-            return GeoInfo(
-                best_geo[1] if best_geo else "unknown",
-                best_isp[1] if best_isp else "unknown",
-                "cache",
-            )
-        return GeoInfo()
+        value = int(addr)
+        geo = "unknown"
+        isp = "unknown"
+        index = self._load_index()
+        for prefix_len in range(32, -1, -1):
+            mask = 0 if prefix_len == 0 else (0xFFFFFFFF << (32 - prefix_len)) & 0xFFFFFFFF
+            match = index.get((prefix_len, value & mask))
+            if not match:
+                continue
+            if geo == "unknown" and match[0] != "unknown":
+                geo = match[0]
+            if isp == "unknown" and match[1] != "unknown":
+                isp = match[1]
+            if geo != "unknown" and isp != "unknown":
+                break
+        return GeoInfo(geo, isp, "cache") if geo != "unknown" or isp != "unknown" else GeoInfo()
 
     def lookup_via_exit(self, ip: str) -> GeoInfo:
         result = ssh_command(
@@ -124,32 +133,49 @@ class GeoLookup:
         isp = data.get("isp") or data.get("org") or data.get("connection", {}).get("isp") or "unknown"
         return GeoInfo(geo, isp, "online")
 
-    def _load_index(self) -> list[tuple[ipaddress.IPv4Network, str, str]]:
-        if self._index is not None:
-            return self._index
-        index: list[tuple[ipaddress.IPv4Network, str, str]] = []
+    def _load_index(self) -> GeoIndex:
         root = self.settings.paths.ip_cache if self.settings.paths else Path("cache/iplist")
         if not root.exists():
-            self._index = []
-            return self._index
-        for path in root.rglob("*.txt"):
-            label = path.stem
-            parent = path.parent.name
-            geo = GEO_LABELS.get(label, label) if parent in {"country", "cncity", "special"} else "unknown"
-            isp = ISP_LABELS.get(label, label) if parent == "isp" else "unknown"
+            return {}
+        files = sorted(root.rglob("*.txt"))
+        signature_parts: list[tuple[str, int, int]] = []
+        for path in files:
             try:
-                lines = path.read_text(encoding="utf-8", errors="ignore").splitlines()
+                stat = path.stat()
             except OSError:
                 continue
-            for line in lines:
-                cidr = line.strip()
-                if not cidr or cidr.startswith("#"):
-                    continue
+            signature_parts.append((str(path), stat.st_mtime_ns, stat.st_size))
+        signature = tuple(signature_parts)
+        cache_key = str(root.resolve())
+        with _INDEX_CACHE_LOCK:
+            cached = _INDEX_CACHE.get(cache_key)
+            if cached and cached[0] == signature:
+                return cached[1]
+            index: GeoIndex = {}
+            for path in files:
+                label = path.stem
+                parent = path.parent.name
+                geo = GEO_LABELS.get(label, label) if parent in {"country", "cncity", "special"} else "unknown"
+                isp = ISP_LABELS.get(label, label) if parent == "isp" else "unknown"
                 try:
-                    net = ipaddress.ip_network(cidr, strict=False)
-                except ValueError:
+                    lines = path.read_text(encoding="utf-8", errors="ignore").splitlines()
+                except OSError:
                     continue
-                if net.version == 4:
-                    index.append((net, geo, isp))
-        self._index = index
-        return index
+                for line in lines:
+                    cidr = line.strip()
+                    if not cidr or cidr.startswith("#"):
+                        continue
+                    try:
+                        net = ipaddress.ip_network(cidr, strict=False)
+                    except ValueError:
+                        continue
+                    if net.version != 4:
+                        continue
+                    key = (net.prefixlen, int(net.network_address))
+                    old_geo, old_isp = index.get(key, ("unknown", "unknown"))
+                    index[key] = (
+                        old_geo if old_geo != "unknown" else geo,
+                        old_isp if old_isp != "unknown" else isp,
+                    )
+            _INDEX_CACHE[cache_key] = (signature, index)
+            return index

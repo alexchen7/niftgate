@@ -194,23 +194,6 @@ install_common() {
     run install -m 0755 "${INSTALL_DIR}/bin/nft.sh" /usr/local/bin/nft.sh
 }
 
-write_json_with_python() {
-    local path="$1" code="$2"
-    if ((DRY_RUN)); then
-        printf '[dry-run] update json %s\n%s\n' "$path" "$code"
-    else
-        python3 - "$path" <<PY
-import json, pathlib, sys
-path = pathlib.Path(sys.argv[1])
-data = json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
-$code
-path.parent.mkdir(parents=True, exist_ok=True)
-path.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\\n", encoding="utf-8")
-path.chmod(0o600)
-PY
-    fi
-}
-
 setup_exit_config() {
     local domain public_port backend_port tg_token tg_chat relay_host relay_user relay_port relay_auth relay_key relay_pass ddns_host
     choose_language
@@ -247,32 +230,63 @@ setup_exit_config() {
     if [[ ! -f "${EXIT_CONFIG_DIR}/config.json" ]]; then
         run install -m 0600 "${INSTALL_DIR}/config/config.example.json" "${EXIT_CONFIG_DIR}/config.json"
     fi
-    write_json_with_python "${EXIT_CONFIG_DIR}/config.json" "
-data['role'] = 'exit'
-ui = data.setdefault('ui', {})
-ui['language'] = '$INSTALL_LANG'
-data.setdefault('paths', {})['state_db'] = '/var/lib/nft-forward-exit/state.db'
-ssh = data.setdefault('ssh', {})
-ssh['relay_host'] = '$relay_host'
-ssh['relay_user'] = '$relay_user'
-ssh['relay_port'] = int('$relay_port')
-ssh['relay_auth_method'] = '$relay_auth'
-ssh['relay_key'] = '$relay_key'
-ssh['relay_password_file'] = '${EXIT_CONFIG_DIR}/ssh/relay_password' if '$relay_auth' == 'password' else ''
-phone = data.setdefault('phone', {})
-phone['public_host'] = '$domain'
-phone['public_port'] = int('$public_port')
-phone['public_scheme'] = 'https'
-phone['port'] = int('$backend_port')
-phone['bind'] = '127.0.0.1'
+    if ((DRY_RUN)); then
+        echo "[dry-run] update ${EXIT_CONFIG_DIR}/config.json"
+    else
+        NFT_CFG_LANGUAGE="$INSTALL_LANG" \
+        NFT_CFG_RELAY_HOST="$relay_host" \
+        NFT_CFG_RELAY_USER="$relay_user" \
+        NFT_CFG_RELAY_PORT="$relay_port" \
+        NFT_CFG_RELAY_AUTH="$relay_auth" \
+        NFT_CFG_RELAY_KEY="$relay_key" \
+        NFT_CFG_DOMAIN="$domain" \
+        NFT_CFG_PUBLIC_PORT="$public_port" \
+        NFT_CFG_BACKEND_PORT="$backend_port" \
+        NFT_CFG_DDNS_HOST="$ddns_host" \
+        NFT_CFG_TG_TOKEN="$tg_token" \
+        NFT_CFG_TG_CHAT="$tg_chat" \
+        NFT_CFG_PASSWORD_FILE="${EXIT_CONFIG_DIR}/ssh/relay_password" \
+        python3 - "${EXIT_CONFIG_DIR}/config.json" <<'PY'
+import json
+import os
+import pathlib
 import secrets
-if not phone.get('secret_path') or phone.get('secret_path', '').startswith('replace-with'):
-    phone['secret_path'] = 'wl-' + secrets.token_urlsafe(48)
-data['ddns'] = ([{'host': '$ddns_host', 'ruleset': 'public'}] if '$ddns_host' else data.get('ddns', []))
-telegram = data.setdefault('telegram', {})
-telegram['token'] = '$tg_token'
-telegram['admin_ids'] = ([int('$tg_chat')] if '$tg_chat' else [])
-"
+import sys
+
+path = pathlib.Path(sys.argv[1])
+data = json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
+data["role"] = "exit"
+data.setdefault("ui", {})["language"] = os.environ["NFT_CFG_LANGUAGE"]
+data.setdefault("paths", {})["state_db"] = "/var/lib/nft-forward-exit/state.db"
+ssh = data.setdefault("ssh", {})
+ssh["relay_host"] = os.environ["NFT_CFG_RELAY_HOST"]
+ssh["relay_user"] = os.environ["NFT_CFG_RELAY_USER"]
+ssh["relay_port"] = int(os.environ["NFT_CFG_RELAY_PORT"])
+ssh["relay_auth_method"] = os.environ["NFT_CFG_RELAY_AUTH"]
+ssh["relay_key"] = os.environ["NFT_CFG_RELAY_KEY"]
+ssh["relay_password_file"] = (
+    os.environ["NFT_CFG_PASSWORD_FILE"] if ssh["relay_auth_method"] == "password" else ""
+)
+phone = data.setdefault("phone", {})
+phone["public_host"] = os.environ["NFT_CFG_DOMAIN"]
+phone["public_port"] = int(os.environ["NFT_CFG_PUBLIC_PORT"])
+phone["public_scheme"] = "https"
+phone["port"] = int(os.environ["NFT_CFG_BACKEND_PORT"])
+phone["bind"] = "127.0.0.1"
+if not phone.get("secret_path") or phone.get("secret_path", "").startswith("replace-with"):
+    phone["secret_path"] = "wl-" + secrets.token_urlsafe(48)
+ddns_host = os.environ["NFT_CFG_DDNS_HOST"]
+if ddns_host:
+    data["ddns"] = [{"host": ddns_host, "ruleset": "public"}]
+telegram = data.setdefault("telegram", {})
+telegram["token"] = os.environ["NFT_CFG_TG_TOKEN"]
+chat_id = os.environ["NFT_CFG_TG_CHAT"].strip()
+telegram["admin_ids"] = [int(chat_id)] if chat_id else []
+path.parent.mkdir(parents=True, exist_ok=True)
+path.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+path.chmod(0o600)
+PY
+    fi
 }
 
 configure_exit_nginx() {
@@ -348,7 +362,8 @@ install_exit() {
     elif python3 - <<PY
 import json
 data=json.load(open('${EXIT_CONFIG_DIR}/config.json'))
-raise SystemExit(0 if data.get('telegram',{}).get('token') else 1)
+telegram=data.get('telegram',{})
+raise SystemExit(0 if telegram.get('token') and telegram.get('admin_ids') else 1)
 PY
     then
         run systemctl enable --now nft-forward-exit-telegram.service
@@ -378,7 +393,8 @@ upgrade_existing() {
     elif python3 - <<PY
 import json
 data=json.load(open('${EXIT_CONFIG_DIR}/config.json'))
-raise SystemExit(0 if data.get('telegram',{}).get('token') else 1)
+telegram=data.get('telegram',{})
+raise SystemExit(0 if telegram.get('token') and telegram.get('admin_ids') else 1)
 PY
     then
         run systemctl enable --now nft-forward-exit-telegram.service
@@ -488,7 +504,9 @@ uninstall_local() {
     load_existing_language
     run systemctl disable --now nft-forward-exit-phone.service nft-forward-exit-queue.service nft-forward-exit-telegram.service || true
     run systemctl disable --now nft-forward-blocklog.service nft-forward-sshlog.service nft-forward-ddns.timer || true
-    run rm -f /etc/nftables.d/nft-forward-managed.conf
+    if [[ -f /etc/nftables.d/port-forward.conf ]] && grep -qF '# Generated by nft-forward.' /etc/nftables.d/port-forward.conf; then
+        run rm -f /etc/nftables.d/port-forward.conf
+    fi
     if command -v nft >/dev/null 2>&1; then
         run nft delete table ip nft_forward || true
     fi

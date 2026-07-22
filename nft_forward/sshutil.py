@@ -92,10 +92,14 @@ def ssh_command(
     except ValueError as exc:
         return SSHResult(False, "", str(exc), 255)
     start = time.monotonic()
+    deadline = start + timeout + 3
     result: SSHResult | None = None
     for attempt in range(SSH_ATTEMPTS):
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return result or SSHResult(False, "", "ssh timeout", 124, int((time.monotonic() - start) * 1000))
         try:
-            proc = subprocess.run(cmd, text=True, capture_output=True, timeout=timeout + 3)
+            proc = subprocess.run(cmd, text=True, capture_output=True, timeout=remaining)
             result = SSHResult(proc.returncode == 0, proc.stdout, proc.stderr, proc.returncode)
         except subprocess.TimeoutExpired as exc:
             result = SSHResult(False, exc.stdout or "", "ssh timeout", 124)
@@ -104,6 +108,9 @@ def ssh_command(
         result.latency_ms = int((time.monotonic() - start) * 1000)
         if result.ok or attempt == SSH_ATTEMPTS - 1 or not is_transient_ssh_failure(result):
             return result
-        time.sleep(min(2.0, 0.5 * (attempt + 1)))
+        delay = min(2.0, 0.5 * (attempt + 1))
+        if time.monotonic() + delay >= deadline:
+            return result
+        time.sleep(delay)
     assert result is not None
     return result

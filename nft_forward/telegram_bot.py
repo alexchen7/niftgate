@@ -8,6 +8,7 @@ import urllib.parse
 import urllib.request
 from typing import Any
 
+from . import __version__
 from .config import Settings, load_settings
 from .exitnode import relay_args, sync_from_relay
 
@@ -31,6 +32,7 @@ LABELS = {
     "rulesets": ("Custom Rule Sets", "自定义规则集"),
     "rule_sets": ("Rule Sets", "规则集"),
     "blocked": ("Blocked IPs", "拦截 IP"),
+    "version": ("Version", "版本"),
     "add_rule": ("Add Forwarding Rule", "新增转发规则"),
     "remove_rule": ("Remove Forwarding Rule", "删除转发规则"),
     "change_rulesets": ("Change Rule Sets", "修改规则集"),
@@ -133,7 +135,7 @@ def answer_callback(settings: Settings, callback_id: str, text: str = "") -> Non
 
 
 def authorized(settings: Settings, chat_id: int) -> bool:
-    return not settings.telegram_admin_ids or chat_id in settings.telegram_admin_ids
+    return bool(settings.telegram_admin_ids) and chat_id in settings.telegram_admin_ids
 
 
 def keyboard(rows: list[list[tuple[str, str]]]) -> dict[str, Any]:
@@ -156,6 +158,7 @@ def status_keyboard(settings: Settings | None, counts: dict[str, int]) -> dict[s
             [(f"{label(settings, 'rules')} ({counts.get('rules', 0)})", "status:rules")],
             [(f"{label(settings, 'rulesets')} ({counts.get('rulesets', 0)})", "status:rulesets")],
             [(f"{label(settings, 'blocked')} ({counts.get('blocked', 0)})", "status:blocked")],
+            [(label(settings, "version"), "status:version")],
             [(label(settings, "back"), "menu:main")],
         ]
     )
@@ -267,6 +270,13 @@ def short_time(value: Any) -> str:
 def one_line(value: Any, default: str = "-") -> str:
     text = str(value if value not in (None, "") else default)
     return " ".join(text.split())
+
+
+def display_version(value: Any) -> str:
+    version = one_line(value, "unknown")
+    if version == "unknown" or version.lower().startswith("v"):
+        return version
+    return f"v{version}"
 
 
 def safe_ruleset_name(value: str) -> bool:
@@ -395,10 +405,12 @@ def status_counts(settings: Settings) -> tuple[dict[str, int], str]:
         "blocked": int(status_data.get("blocked", status_data.get("blocked_visible", 0))),
     }
     mode = one_line(status_data.get("mode"), "unknown")
+    exit_version = display_version(__version__)
+    relay_version = display_version(status_data.get("version"))
     return counts, text(
         settings,
-        f"Status\nMode: {mode}\n{latency}\n\nChoose a category for details.",
-        f"状态\n当前模式：{mode}\n{latency}\n\n请选择类别查看详情。",
+        f"Status\nMode: {mode}\nExit / Telegram: {exit_version}\nRelay: {relay_version}\n{latency}\n\nChoose a category for details.",
+        f"状态\n当前模式：{mode}\n出口端 / Telegram：{exit_version}\n中继端：{relay_version}\n{latency}\n\n请选择类别查看详情。",
     )
 
 
@@ -408,6 +420,31 @@ def render_status_menu(settings: Settings) -> tuple[str, dict[str, Any]]:
 
 
 def render_status_detail(settings: Settings, category: str) -> str:
+    if category == "version":
+        ok, status_data, out = relay_json(settings, ["bot-status"], {})
+        exit_version = display_version(__version__)
+        if not ok or not isinstance(status_data, dict):
+            return text(
+                settings,
+                f"Version\n\nExit / Telegram: {exit_version}\nRelay: unavailable\n\nRelay error: {out}",
+                f"版本\n\n出口端 / Telegram：{exit_version}\n中继端：不可用\n\n中继错误：{out}",
+            )
+        relay_version = display_version(status_data.get("version"))
+        if relay_version == "unknown":
+            result = text(
+                settings,
+                "Relay version unavailable. Upgrade the relay to enable version reporting.",
+                "无法读取中继端版本。请升级中继端以启用版本报告。",
+            )
+        elif relay_version == exit_version:
+            result = text(settings, "Versions match.", "两端版本一致。")
+        else:
+            result = text(settings, "Version mismatch: upgrade both nodes.", "两端版本不一致：请升级两端。")
+        return text(
+            settings,
+            f"Version\n\nExit / Telegram: {exit_version}\nRelay: {relay_version}\n\n{result}",
+            f"版本\n\n出口端 / Telegram：{exit_version}\n中继端：{relay_version}\n\n{result}",
+        )
     if category == "allow":
         ok, rows, out = relay_json(settings, ["allow-list"], [])
         if not ok:
@@ -939,8 +976,8 @@ def handle_pending(settings: Settings, chat_id: int, message_text: str) -> tuple
     return text(settings, "Unknown pending action.", "未知待处理操作。"), manage_keyboard(settings)
 
 
-def handle_command(settings: Settings, text: str) -> str:
-    parts = text.strip().split()
+def handle_command(settings: Settings, command_text: str) -> str:
+    parts = command_text.strip().split()
     if not parts:
         return text(settings, "empty command", "空命令")
     cmd = parts[0].lower()
@@ -1263,6 +1300,10 @@ def handle_message(settings: Settings, chat_id: int, message_text: str) -> tuple
 
 def run() -> None:
     settings = load_settings()
+    if not settings.telegram_token:
+        raise SystemExit("telegram token is not configured")
+    if not settings.telegram_admin_ids:
+        raise SystemExit("telegram admin_ids is empty; refusing to start an unauthenticated control bot")
     offset = 0
     backoff = 2
     while True:

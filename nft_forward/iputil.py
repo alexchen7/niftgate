@@ -13,7 +13,10 @@ class SourceSpec:
 
 
 def normalize_ip(value: str) -> str:
-    return str(ipaddress.ip_address(value.strip()))
+    address = ipaddress.ip_address(value.strip())
+    if address.version != 4:
+        raise ValueError("only IPv4 addresses are supported")
+    return str(address)
 
 
 def normalize_network(value: str, host_policy: int | None = None) -> SourceSpec:
