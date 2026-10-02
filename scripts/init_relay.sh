@@ -117,10 +117,13 @@ install -m 0644 "${INSTALL_DIR}/services/nft-forward-blocklog.service" /etc/syst
 install -m 0644 "${INSTALL_DIR}/services/nft-forward-sshlog.service" /etc/systemd/system/
 install -m 0644 "${INSTALL_DIR}/services/nft-forward-ddns.service" /etc/systemd/system/
 install -m 0644 "${INSTALL_DIR}/services/nft-forward-ddns.timer" /etc/systemd/system/
+install -m 0644 "${INSTALL_DIR}/services/nft-forward-destinations.service" /etc/systemd/system/
+install -m 0644 "${INSTALL_DIR}/services/nft-forward-destinations.timer" /etc/systemd/system/
 systemctl daemon-reload
 systemctl enable --now nft-forward-blocklog.service || true
 systemctl enable --now nft-forward-sshlog.service || true
 systemctl enable --now nft-forward-ddns.timer || true
+systemctl enable --now nft-forward-destinations.timer
 systemctl enable --now nftables || true
 
 cat <<EOF

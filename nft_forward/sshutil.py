@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import subprocess
+import shlex
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -71,7 +72,8 @@ def build_ssh_command(
         if key:
             cmd += ["-i", key]
     cmd.append(target)
-    cmd += remote_args
+    # OpenSSH joins remote arguments into shell text; quote each argument once.
+    cmd += [shlex.quote(arg) for arg in remote_args]
     return cmd
 
 

@@ -8,7 +8,8 @@ from pathlib import Path
 from typing import Any, Iterable
 
 from .constants import CHANNELS, DEFAULT_RULESET, DEFAULT_TTL_DAYS
-from .iputil import contains_ip
+from .destination import normalize_destination, validate_port
+from .iputil import contains_ip, normalize_ip
 from .logging_util import append_jsonl
 
 QUEUE_MAX_ATTEMPTS = 100
@@ -29,6 +30,7 @@ class ForwardRule:
     rulesets: list[str]
     include_public: bool
     open_access: bool
+    dest_host: str = ""
 
 
 @dataclass
@@ -138,6 +140,13 @@ class State:
             """
         )
         self.conn.commit()
+        if "dest_host" not in {row[1] for row in self.conn.execute("PRAGMA table_info(forward_rules)")}:
+            try:
+                self.conn.execute("ALTER TABLE forward_rules ADD COLUMN dest_host TEXT NOT NULL DEFAULT ''")
+                self.conn.commit()
+            except sqlite3.OperationalError:
+                if "dest_host" not in {row[1] for row in self.conn.execute("PRAGMA table_info(forward_rules)")}:
+                    raise
         self.ensure_ruleset(DEFAULT_RULESET)
 
     def close(self) -> None:
@@ -173,6 +182,7 @@ class State:
         channels: Iterable[str] | None = None,
         prefixes: dict[str, int] | None = None,
         note: str = "",
+        commit: bool = True,
     ) -> None:
         channels = set(channels or CHANNELS)
         unknown = channels - CHANNELS
@@ -187,7 +197,8 @@ class State:
             """,
             (name, json.dumps(sorted(channels)), json.dumps(prefixes, sort_keys=True), note),
         )
-        self.conn.commit()
+        if commit:
+            self.conn.commit()
 
     def update_ruleset(
         self, name: str, channels: Iterable[str], prefixes: dict[str, int], note: str = ""
@@ -271,27 +282,56 @@ class State:
         rulesets: list[str] | None = None,
         include_public: bool = True,
         open_access: bool = False,
+        dest_host: str = "",
+        commit: bool = True,
     ) -> None:
+        lport, dest_port = validate_port(lport), validate_port(dest_port)
+        dest_ip = normalize_ip(dest_ip)
+        dest_host = normalize_destination(dest_host) if dest_host else ""
         note = " ".join(str(note).splitlines()).strip()
         refs = sorted(set(rulesets or []))
         for ruleset in refs:
-            self.ensure_ruleset(ruleset)
+            self.ensure_ruleset(ruleset, commit=commit)
         self.conn.execute(
             """
-            INSERT INTO forward_rules(lport,dest_ip,dest_port,note,rulesets,include_public,open_access)
-            VALUES(?,?,?,?,?,?,?)
+            INSERT INTO forward_rules(lport,dest_ip,dest_port,note,rulesets,include_public,open_access,dest_host)
+            VALUES(?,?,?,?,?,?,?,?)
             ON CONFLICT(lport) DO UPDATE SET
               dest_ip=excluded.dest_ip,
               dest_port=excluded.dest_port,
               note=excluded.note,
               rulesets=excluded.rulesets,
               include_public=excluded.include_public,
-              open_access=excluded.open_access
+              open_access=excluded.open_access,
+              dest_host=excluded.dest_host
             """,
-            (lport, dest_ip, dest_port, note, json.dumps(refs), int(include_public), int(open_access)),
+            (lport, dest_ip, dest_port, note, json.dumps(refs), int(include_public), int(open_access), dest_host),
         )
-        self.conn.commit()
-        self.audit("forward_rule_upserted", lport=lport, dest=f"{dest_ip}:{dest_port}", rulesets=refs, open_access=open_access)
+        if commit:
+            self.conn.commit()
+            self.audit("forward_rule_upserted", lport=lport, dest=f"{dest_ip}:{dest_port}", rulesets=refs, open_access=open_access)
+
+    def update_rule(self, rule: ForwardRule) -> None:
+        """Stage an edit in the caller's transaction, preserving the rule ID."""
+        validate_port(rule.lport)
+        validate_port(rule.dest_port)
+        normalize_ip(rule.dest_ip)
+        if rule.dest_host:
+            normalize_destination(rule.dest_host)
+        other = self.rule_by_lport(rule.lport)
+        if other and other.id != rule.id:
+            raise ValueError(f"relay port already has a forwarding rule: {rule.lport}")
+        for name in rule.rulesets:
+            self.ensure_ruleset(name, commit=False)
+        cur = self.conn.execute(
+            "UPDATE forward_rules SET lport=?,dest_ip=?,dest_port=?,note=?,rulesets=?,"
+            "include_public=?,open_access=?,dest_host=? WHERE id=?",
+            (rule.lport, rule.dest_ip, rule.dest_port, " ".join(rule.note.splitlines()).strip(),
+             json.dumps(sorted(set(rule.rulesets))), int(rule.include_public), int(rule.open_access),
+             rule.dest_host, rule.id),
+        )
+        if cur.rowcount != 1:
+            raise ValueError("forwarding rule was removed; refresh the rule list")
 
     def delete_rule(self, lport: int) -> bool:
         cur = self.conn.execute("DELETE FROM forward_rules WHERE lport=?", (lport,))
@@ -319,6 +359,7 @@ class State:
             rulesets=json.loads(row["rulesets"]),
             include_public=bool(row["include_public"]),
             open_access=bool(row["open_access"]),
+            dest_host=row["dest_host"],
         )
 
     def add_allow(

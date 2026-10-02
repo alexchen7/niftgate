@@ -147,6 +147,32 @@ nft.sh ruleset set ddns --channels ddns,manual --ddns-prefix 24 --manual-prefix 
 nft.sh add-rule 58495 203.0.113.20 58495 --ruleset ddns
 ```
 
+## 编辑目标地址
+
+Telegram：**管理 > 编辑转发规则 > 选择规则**。点击 **本机端口**、
+**目标 IP / 域名 / URL** 或 **目标端口** 后发送新值。修改本机端口会保留备注和
+访问策略；已占用的转发端口、保留端口会被拒绝。DNS 或 nftables 验证失败时保留原规则。
+
+```bash
+nft.sh edit-rule 58495 --new-lport 58496
+nft.sh edit-rule 58496 --dest-ip exit.example.com --dest-port 58495
+nft.sh add-rule 58500 https://exit.example.com/path 58500
+```
+
+URL 仅提取域名。URL 的路径、协议和内嵌端口不会改变单独设置的目标端口；
+本功能是 TCP/UDP 转发，不是 HTTP 反向代理。兼容已有 IPv4 规则和旧数据库。
+
+中继端的 `nft-forward-destinations.timer` 每 10 秒检查目标域名，攻击模式下也继续工作。
+只有实际使用的 IPv4 地址变化时才原子更新 nftables。DNS 暂时失败时保留上一次成功
+解析的地址，下次继续重试。存在多个 A 记录时，只要当前地址仍在结果中就继续使用，
+避免因返回顺序变化反复更新。新域名必须成功解析后才能保存。导入导出包含域名和
+缓存地址，导入时不需要 DNS 可用。
+
+```bash
+nft.sh sync-destinations
+systemctl status nft-forward-destinations.timer
+```
+
 ## Secret URL
 
 Secret URL 由中继端保存，出口节点会同步缓存。即使中继暂时不可达，已缓存且启用

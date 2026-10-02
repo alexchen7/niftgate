@@ -10,6 +10,7 @@ from typing import Any
 
 from . import __version__
 from .config import Settings, load_settings
+from .destination import normalize_destination, validate_port
 from .exitnode import relay_args, sync_from_relay
 
 PENDING_ACTIONS: dict[int, dict[str, str]] = {}
@@ -37,6 +38,9 @@ LABELS = {
     "remove_rule": ("Remove Forwarding Rule", "删除转发规则"),
     "change_rulesets": ("Change Rule Sets", "修改规则集"),
     "edit_rule": ("Edit Forwarding Rule", "编辑转发规则"),
+    "edit_lport": ("Listening Port", "本机端口"),
+    "edit_destination": ("Destination IP / Host / URL", "目标 IP / 域名 / URL"),
+    "edit_dest_port": ("Destination Port", "目标端口"),
     "ruleset_sources": ("Rule Set Sources", "规则集来源"),
     "create_ruleset": ("Create Rule Set", "创建规则集"),
     "delete_ruleset": ("Delete Rule Sets", "删除规则集"),
@@ -734,10 +738,15 @@ def render_edit_rule_detail(settings: Settings, lport: int) -> tuple[str, dict[s
         f"编辑转发规则\n{rule.get('lport')} -> {rule.get('target')}\n"
         f"访问：{access}\n公共规则集：{public}\n自定义规则集：{custom}\n备注：{one_line(rule.get('note'))}",
     )
+    if rule.get("dest_host"):
+        body += text(settings, f"\nResolved IPv4: {rule.get('dest_ip')}", f"\n当前解析 IPv4：{rule.get('dest_ip')}")
     open_mark = "[x]" if rule.get("open_access") else "[ ]"
     restricted_mark = "[ ]" if rule.get("open_access") else "[x]"
     public_label = label(settings, "public_on") if rule.get("include_public") else label(settings, "public_off")
     button_rows = [
+        [(label(settings, "edit_lport"), f"edit_rule:field:{lport}:new_lport"),
+         (label(settings, "edit_dest_port"), f"edit_rule:field:{lport}:dest_port")],
+        [(label(settings, "edit_destination"), f"edit_rule:field:{lport}:dest_ip")],
         [
             (f"{open_mark} {label(settings, 'access_open')}", f"edit_rule:access:{lport}:open"),
             (f"{restricted_mark} {label(settings, 'access_restricted')}", f"edit_rule:access:{lport}:restricted"),
@@ -819,7 +828,7 @@ def set_pending(chat_id: int, action: str, settings: Settings) -> str:
             settings,
             "Add Forwarding Rule\n"
             "Send one line:\n"
-            "local_port target_ip target_port [rulesets] [note]\n\n"
+            "local_port target_ip_or_hostname_or_url target_port [rulesets] [note]\n\n"
             "Rulesets examples:\n"
             "public = public ruleset only\n"
             "public+ddns = public plus custom ddns\n"
@@ -827,7 +836,7 @@ def set_pending(chat_id: int, action: str, settings: Settings) -> str:
             "none = no ruleset sources yet",
             "新增转发规则\n"
             "发送一行：\n"
-            "本机端口 目标IP 目标端口 [规则集] [备注]\n\n"
+            "本机端口 目标IP/域名/URL 目标端口 [规则集] [备注]\n\n"
             "规则集示例：\n"
             "public = 只使用公共规则集\n"
             "public+ddns = 公共规则集加自定义 ddns\n"
@@ -868,6 +877,22 @@ def handle_pending(settings: Settings, chat_id: int, message_text: str) -> tuple
     except ValueError as exc:
         return text(settings, f"Could not parse input: {exc}", f"无法解析输入：{exc}"), manage_keyboard(settings)
     action = pending.get("action")
+    if action == "edit_rule_field":
+        lport = pending["lport"]
+        field = pending["field"]
+        options = {"new_lport": "--new-lport", "dest_ip": "--dest-ip", "dest_port": "--dest-port"}
+        try:
+            if len(parts) != 1 or field not in options:
+                raise ValueError("send one value")
+            value = normalize_destination(parts[0]) if field == "dest_ip" else str(validate_port(int(parts[0])))
+        except ValueError as exc:
+            PENDING_ACTIONS[chat_id] = pending
+            return text(settings, f"Invalid value: {exc}\nPlease try again.", f"输入无效：{exc}\n请重新输入。"), back_keyboard(f"edit_rule:select:{lport}", settings)
+        ok, out = relay_text(settings, ["edit-rule", lport, options[field], value])
+        if not ok:
+            PENDING_ACTIONS[chat_id] = pending
+            return text(settings, f"Edit Forwarding Rule\nrelay error: {out}\nPlease try again.", f"编辑转发规则\n中继错误：{out}\n请重新输入。"), back_keyboard(f"edit_rule:select:{lport}", settings)
+        return render_edit_rule_detail(settings, int(value) if field == "new_lport" else int(lport))
     if action == "add_rule":
         if len(parts) < 3:
             return set_pending(chat_id, "add_rule", settings), manage_keyboard(settings)
@@ -899,19 +924,9 @@ def handle_pending(settings: Settings, chat_id: int, message_text: str) -> tuple
         if not rule:
             return text(settings, f"relay error: {err}", f"中继错误：{err}"), manage_keyboard(settings)
         include_public, rulesets = parse_ruleset_token(parts[1])
-        target = str(rule.get("target", ""))
-        if ":" not in target:
-            return text(settings, f"relay error: malformed target for {lport}: {target}", f"中继错误：端口 {lport} 的目标格式异常：{target}"), manage_keyboard(settings)
-        dest_ip, dest_port = target.rsplit(":", 1)
-        args = ["add-rule", str(lport), dest_ip, dest_port]
-        if rule.get("note"):
-            args += ["--note", str(rule["note"])]
+        args = ["edit-rule", str(lport), "--clear-rulesets", "--public" if include_public else "--no-public"]
         for ruleset in rulesets:
             args += ["--ruleset", ruleset]
-        if not include_public:
-            args += ["--no-public"]
-        if rule.get("open_access"):
-            args += ["--open"]
         ok, out = relay_text(settings, args)
         return (out if ok else text(settings, f"relay error: {out}", f"中继错误：{out}")), manage_keyboard(settings)
     if action == "ddns_add":
@@ -1093,6 +1108,17 @@ def handle_callback_for_chat(settings: Settings, chat_id: int, data: str) -> tup
     if data.startswith("edit_rule:select:"):
         PENDING_ACTIONS.pop(chat_id, None)
         return render_edit_rule_detail(settings, int(data.rsplit(":", 1)[1]))
+    if data.startswith("edit_rule:field:"):
+        _prefix, _action, lport, field = data.split(":", 3)
+        prompts = {
+            "new_lport": ("Listening Port\nSend the new relay listening port (1-65535).", "本机端口\n请输入新的中继监听端口（1-65535）。"),
+            "dest_port": ("Destination Port\nSend the new destination port (1-65535).", "目标端口\n请输入新的目标端口（1-65535）。"),
+            "dest_ip": ("Destination\nSend an IPv4 address, hostname, or HTTP(S) URL. Only the URL hostname is used; the destination port stays as configured.", "目标地址\n请输入 IPv4、域名或 HTTP(S) URL。URL 仅提取域名，目标端口仍使用单独设置的值。"),
+        }
+        if field not in prompts:
+            return render_edit_rule_list(settings)
+        PENDING_ACTIONS[chat_id] = {"action": "edit_rule_field", "lport": lport, "field": field}
+        return text(settings, *prompts[field]), back_keyboard(f"edit_rule:select:{lport}", settings)
     if data.startswith("edit_rule:access:"):
         _prefix, _action, lport, mode = data.split(":", 3)
         ok, out = relay_text(settings, ["edit-rule", lport, "--open" if mode == "open" else "--restricted"])

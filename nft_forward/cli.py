@@ -8,6 +8,7 @@ import re
 import secrets
 import subprocess
 import sys
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
@@ -15,11 +16,13 @@ from . import __version__
 from .blocklog import run as run_blocklog
 from .config import load_settings, write_example_config
 from .constants import DEFAULT_RULESET, RESERVED_PORTS
+from .destination import normalize_destination, prepare_destination, validate_port
+from .destination_sync import sync_destinations
 from .exitnode import online_geo_command, queue_worker, sync_from_relay
 from .geo import GeoLookup
 from .iputil import normalize_ip, normalize_sources
 from .legacy import import_legacy_conf
-from .nft import render_nft, write_and_apply
+from .nft import apply_lock, render_nft, write_and_apply
 from .phone_server import run as run_phone
 from .relay import bot_status, ingest_source, state_for, status, sync_ddns
 from .sshlog import run as run_sshlog
@@ -307,7 +310,11 @@ def cmd_list(args: argparse.Namespace) -> int:
             rows.append(
                 {
                     "lport": rule.lport,
-                    "target": f"{rule.dest_ip}:{rule.dest_port}",
+                    "target": f"{rule.dest_host or rule.dest_ip}:{rule.dest_port}",
+                    "dest_ip": rule.dest_ip,
+                    "dest_host": rule.dest_host,
+                    "dest_port": rule.dest_port,
+                    "resolved_target": f"{rule.dest_ip}:{rule.dest_port}",
                     "note": rule.note,
                     "rulesets": rule.rulesets,
                     "include_public": rule.include_public,
@@ -323,22 +330,26 @@ def cmd_list(args: argparse.Namespace) -> int:
 
 def cmd_add_rule(args: argparse.Namespace) -> int:
     settings = load_settings(args.config)
+    validate_port(args.lport)
+    validate_port(args.dest_port)
     if args.lport in settings.reserved_ports:
         raise SystemExit(f"refusing reserved relay port: {args.lport}")
     state = state_for(settings)
     try:
-        state.add_rule(
-            args.lport,
-            args.dest_ip,
-            args.dest_port,
-            note=args.note or "",
-            rulesets=args.ruleset or [],
-            include_public=not args.no_public,
-            open_access=args.open,
-        )
-        if args.apply:
-            write_and_apply(settings, state, apply=True)
-        print(f"rule upserted: {args.lport} -> {args.dest_ip}:{args.dest_port}")
+        dest_ip, dest_host = prepare_destination(args.dest_ip, settings.ddns_timeout,
+                                                  state.rule_by_lport(args.lport))
+        with apply_lock(settings), state.conn:
+            state.conn.execute("BEGIN IMMEDIATE")
+            state.add_rule(
+                args.lport, dest_ip, args.dest_port,
+                note=args.note or "", rulesets=args.ruleset or [],
+                include_public=not args.no_public, open_access=args.open,
+                dest_host=dest_host, commit=False,
+            )
+            if args.apply:
+                write_and_apply(settings, state, apply=True, lock_held=True)
+        state.audit("forward_rule_upserted", lport=args.lport, dest=f"{dest_host or dest_ip}:{args.dest_port}")
+        print(f"rule upserted: {args.lport} -> {dest_host or dest_ip}:{args.dest_port}")
     finally:
         state.close()
     return 0
@@ -361,35 +372,46 @@ def cmd_edit_rule(args: argparse.Namespace) -> int:
     settings = load_settings(args.config)
     state = state_for(settings)
     try:
-        rule = state.rule_by_lport(args.lport)
-        if not rule:
+        original = state.rule_by_lport(args.lport)
+        if not original:
             raise SystemExit(f"rule not found: {args.lport}")
-        rulesets = rule.rulesets
-        if args.clear_rulesets:
-            rulesets = []
-        if args.ruleset is not None:
-            rulesets = args.ruleset
-        note = rule.note
-        if args.clear_note:
-            note = ""
-        elif args.note is not None:
-            note = args.note
-        state.add_rule(
-            rule.lport,
-            args.dest_ip or rule.dest_ip,
-            args.dest_port or rule.dest_port,
-            note=note,
-            rulesets=rulesets,
-            include_public=rule.include_public if args.include_public is None else args.include_public,
-            open_access=rule.open_access if args.open_access is None else args.open_access,
-        )
-        if args.apply:
-            write_and_apply(settings, state, apply=True)
-        updated = state.rule_by_lport(args.lport)
+        new_port = validate_port(args.new_lport if args.new_lport is not None else original.lport)
+        if new_port in settings.reserved_ports:
+            raise ValueError(f"refusing reserved relay port: {new_port}")
+        if args.dest_port is not None:
+            validate_port(args.dest_port)
+        destination = prepare_destination(args.dest_ip, settings.ddns_timeout, original) if args.dest_ip is not None else None
+        with apply_lock(settings), state.conn:
+            state.conn.execute("BEGIN IMMEDIATE")
+            rule = state.rule_by_lport(args.lport)
+            if not rule or rule.id != original.id:
+                raise ValueError("forwarding rule changed; refresh the rule list")
+            if destination and (rule.dest_ip, rule.dest_host) != (original.dest_ip, original.dest_host):
+                raise ValueError("destination changed while resolving; retry the edit")
+            updated = replace(
+                rule, lport=new_port,
+                dest_ip=destination[0] if destination else rule.dest_ip,
+                dest_host=destination[1] if destination else rule.dest_host,
+                dest_port=args.dest_port if args.dest_port is not None else rule.dest_port,
+                note="" if args.clear_note else rule.note if args.note is None else args.note,
+                rulesets=args.ruleset if args.ruleset is not None else [] if args.clear_rulesets else rule.rulesets,
+                include_public=rule.include_public if args.include_public is None else args.include_public,
+                open_access=rule.open_access if args.open_access is None else args.open_access,
+            )
+            if updated != rule:
+                state.update_rule(updated)
+                if args.apply:
+                    write_and_apply(settings, state, apply=True, lock_held=True)
+        state.audit("forward_rule_edited", old_lport=args.lport, lport=updated.lport,
+                    dest=f"{updated.dest_host or updated.dest_ip}:{updated.dest_port}")
         print_json(
             {
                 "lport": updated.lport if updated else args.lport,
-                "target": f"{updated.dest_ip}:{updated.dest_port}" if updated else "",
+                "target": f"{updated.dest_host or updated.dest_ip}:{updated.dest_port}" if updated else "",
+                "dest_host": updated.dest_host,
+                "dest_ip": updated.dest_ip,
+                "dest_port": updated.dest_port,
+                "resolved_target": f"{updated.dest_ip}:{updated.dest_port}",
                 "note": updated.note if updated else "",
                 "rulesets": updated.rulesets if updated else [],
                 "include_public": updated.include_public if updated else False,
@@ -654,6 +676,7 @@ def export_payload(settings, include_secrets: bool) -> dict[str, Any]:
                 {
                     "lport": rule.lport,
                     "dest_ip": rule.dest_ip,
+                    "dest_host": rule.dest_host,
                     "dest_port": rule.dest_port,
                     "note": rule.note,
                     "rulesets": rule.rulesets,
@@ -691,6 +714,12 @@ def cmd_import(args: argparse.Namespace) -> int:
     forbidden = sorted(imported_ports & settings.reserved_ports)
     if forbidden:
         raise SystemExit(f"refusing reserved relay ports in import: {', '.join(str(port) for port in forbidden)}")
+    # Validate all destinations before --replace can remove any existing rules.
+    for row in payload.get("forward_rules", []):
+        validate_port(row["lport"])
+        validate_port(row["dest_port"])
+        row["dest_ip"] = normalize_ip(row["dest_ip"])
+        row["dest_host"] = normalize_destination(row["dest_host"]) if row.get("dest_host") else ""
     state = state_for(settings)
     try:
         if args.replace:
@@ -709,6 +738,7 @@ def cmd_import(args: argparse.Namespace) -> int:
                 rulesets=row.get("rulesets", []),
                 include_public=bool(row.get("include_public", True)),
                 open_access=bool(row.get("open_access", False)),
+                dest_host=row["dest_host"],
             )
         for row in payload.get("secret_urls", []):
             path = row.get("secret_path")
@@ -973,6 +1003,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     p = sub.add_parser("edit-rule")
     p.add_argument("lport", type=int)
+    p.add_argument("--new-lport", type=int, help="move this rule to an unused relay port")
     p.add_argument("--dest-ip")
     p.add_argument("--dest-port", type=int)
     note_group = p.add_mutually_exclusive_group()
@@ -990,6 +1021,9 @@ def build_parser() -> argparse.ArgumentParser:
     access_group.set_defaults(open_access=None)
     p.add_argument("--no-apply", dest="apply", action="store_false", default=True)
     p.set_defaults(func=cmd_edit_rule)
+
+    p = sub.add_parser("sync-destinations", help="refresh forwarding destination IPv4 addresses")
+    p.set_defaults(func=lambda args: print(f"destinations changed: {sync_destinations(load_settings(args.config))}") or 0)
 
     p = sub.add_parser("allow")
     p.add_argument("source")

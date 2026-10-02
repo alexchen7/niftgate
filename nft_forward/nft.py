@@ -196,15 +196,14 @@ def write_config_atomically(path: Path, text: str) -> None:
                 pass
 
 
-def write_and_apply(settings: Settings, state: State, apply: bool = True) -> str:
+def write_and_apply(settings: Settings, state: State, apply: bool = True, lock_held: bool = False) -> str:
     if not settings.paths:
         raise RuntimeError("settings paths not loaded")
-    with apply_lock(settings):
+    with contextlib.nullcontext() if lock_held else apply_lock(settings):
         text = render_nft(settings, state)
         ok, message = validate_nft(text)
         if not ok:
             raise RuntimeError(f"nft validation failed: {message}")
-        write_config_atomically(settings.paths.nft_conf, text)
         if apply and shutil.which("nft"):
             apply_text = text
             if table_exists(TABLE_NAME):
@@ -215,4 +214,5 @@ def write_and_apply(settings: Settings, state: State, apply: bool = True) -> str
             for legacy_table in LEGACY_TABLE_NAMES:
                 subprocess.run(["nft", "flush", "table", "ip", legacy_table], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
                 subprocess.run(["nft", "delete", "table", "ip", legacy_table], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        write_config_atomically(settings.paths.nft_conf, text)
         return message or "ok"

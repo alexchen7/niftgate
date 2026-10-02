@@ -171,6 +171,36 @@ Attach rulesets to a forwarding rule:
 nft.sh add-rule 58495 203.0.113.20 58495 --ruleset ddns
 ```
 
+## Editing Destinations
+
+Telegram: **Manage > Edit Forwarding Rule > choose a rule**. Use **Listening
+Port**, **Destination IP / Host / URL**, or **Destination Port**, then send the
+new value. Port moves preserve notes and access policies and reject occupied or
+reserved relay ports. Failed DNS or nftables validation leaves the old rule intact.
+
+```bash
+nft.sh edit-rule 58495 --new-lport 58496
+nft.sh edit-rule 58496 --dest-ip exit.example.com --dest-port 58495
+nft.sh add-rule 58500 https://exit.example.com/path 58500
+```
+
+For URLs, only the hostname is used. URL paths, schemes and embedded ports do not
+change the separately configured destination port; this is TCP/UDP forwarding,
+not an HTTP reverse proxy. IPv4 destinations and older databases remain compatible.
+
+The relay's `nft-forward-destinations.timer` checks hostname destinations every
+10 seconds, including in attack mode. It applies one atomic nftables update only
+when the chosen IPv4 address changes. DNS failures retain the last successful
+address and retry on the next cycle. With multiple A records, the current address
+is retained while it remains in the answer, avoiding DNS-order churn. New hostnames
+must resolve successfully before being saved. Export/import includes both the
+hostname and cached address; it does not require DNS during import.
+
+```bash
+nft.sh sync-destinations
+systemctl status nft-forward-destinations.timer
+```
+
 ## Secret URLs
 
 Secret URLs let a user visit a long, private URL and add their current source IP
