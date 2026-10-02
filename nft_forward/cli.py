@@ -20,6 +20,8 @@ from .destination import normalize_destination, prepare_destination, validate_po
 from .destination_sync import sync_destinations
 from .exitnode import online_geo_command, queue_worker, sync_from_relay
 from .geo import GeoLookup
+from .geo_database import database_info, receive_database
+from .geo_update import job_status, perform_update, refresh_labels, update_lock
 from .iputil import normalize_ip, normalize_sources
 from .legacy import import_legacy_conf
 from .nft import apply_lock, render_nft, write_and_apply
@@ -218,6 +220,29 @@ def cmd_status(args: argparse.Namespace) -> int:
 
 def cmd_bot_status(args: argparse.Namespace) -> int:
     print_json(bot_status(load_settings(args.config)))
+    return 0
+
+
+def cmd_geo_update(args: argparse.Namespace) -> int:
+    result = perform_update(load_exit_settings(args), local_only=args.local_only)
+    print_json(result)
+    return 1 if result.get("status") == "failed" else 0
+
+
+def cmd_geo_status(args: argparse.Namespace) -> int:
+    settings = load_settings(args.config)
+    print_json({"database": database_info(settings), "job": job_status(settings)})
+    return 0
+
+
+def cmd_geo_import(args: argparse.Namespace) -> int:
+    settings = load_settings(args.config)
+    with update_lock(settings) as acquired:
+        if not acquired:
+            raise RuntimeError("another database update is in progress")
+        info = receive_database(settings, sys.stdin.buffer, args.sha256)
+        info["labels_refreshed"] = refresh_labels(settings)
+    print_json(info)
     return 0
 
 
@@ -1024,6 +1049,15 @@ def build_parser() -> argparse.ArgumentParser:
 
     p = sub.add_parser("sync-destinations", help="refresh forwarding destination IPv4 addresses")
     p.set_defaults(func=lambda args: print(f"destinations changed: {sync_destinations(load_settings(args.config))}") or 0)
+
+    p = sub.add_parser("geo-update", help="download the community IP database on the exit and synchronize the relay")
+    p.add_argument("--local-only", action="store_true")
+    p.set_defaults(func=cmd_geo_update)
+    p = sub.add_parser("geo-status", help="show the installed IP database and last update")
+    p.set_defaults(func=cmd_geo_status)
+    p = sub.add_parser("geo-import", help=argparse.SUPPRESS)
+    p.add_argument("--sha256", required=True)
+    p.set_defaults(func=cmd_geo_import)
 
     p = sub.add_parser("allow")
     p.add_argument("source")

@@ -57,6 +57,7 @@ fi
 
 NFT_FORWARD_CONFIG="${CONFIG_DIR}/config.json" /usr/local/bin/nft.sh init-db
 install -m 0644 "${INSTALL_DIR}/services/nft-forward-exit-telegram.service" /etc/systemd/system/
+install -m 0644 "${INSTALL_DIR}/services/nft-forward-geo-update.service" /etc/systemd/system/
 install -m 0644 "${INSTALL_DIR}/services/nft-forward-exit-phone.service" /etc/systemd/system/
 install -m 0644 "${INSTALL_DIR}/services/nft-forward-exit-queue.service" /etc/systemd/system/
 systemctl daemon-reload

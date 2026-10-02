@@ -6,7 +6,7 @@ import time
 from typing import Any
 
 from .config import Settings, load_settings
-from .geo import GeoLookup
+from .geo import GeoInfo, GeoLookup
 from .sshutil import ssh_command
 from .state import State
 
@@ -133,7 +133,13 @@ def queue_worker() -> None:
 
 def online_geo_command(ip: str) -> str:
     settings = load_settings()
-    geo = GeoLookup(settings).lookup_online(ip)
+    lookup = GeoLookup(settings)
+    geo = lookup.lookup_local(ip)
+    if geo.geo == "unknown" or geo.isp == "unknown":
+        online = lookup.lookup_online(ip)
+        geo = GeoInfo(geo.geo if geo.geo != "unknown" else online.geo,
+                      geo.isp if geo.isp != "unknown" else online.isp,
+                      f"{geo.source}+online")
     return json.dumps({"ip": ip, "geo": geo.geo, "isp": geo.isp, "source": geo.source}, ensure_ascii=False)
 
 

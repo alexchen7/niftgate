@@ -12,6 +12,8 @@ from . import __version__
 from .config import Settings, load_settings
 from .destination import normalize_destination, validate_port
 from .exitnode import relay_args, sync_from_relay
+from .geo_database import database_info
+from .geo_update import job_status, request_update
 
 PENDING_ACTIONS: dict[int, dict[str, str]] = {}
 MAX_MESSAGE = 3900
@@ -47,6 +49,8 @@ LABELS = {
     "view_rulesets": ("View Rule Sets", "查看规则集"),
     "secret_url": ("Secret URL", "Secret URL"),
     "ddns": ("DDNS", "DDNS"),
+    "geo_database": ("IP Database", "IP 归属地库"),
+    "update_database": ("Update Database", "更新数据库"),
     "view_sources": ("View Sources", "查看来源"),
     "add_source": ("Add Source", "添加来源"),
     "remove_source": ("Remove Source", "删除来源"),
@@ -183,6 +187,7 @@ def manage_keyboard(settings: Settings | None = None) -> dict[str, Any]:
             [(label(settings, "ruleset_sources"), "manage:ruleset_sources")],
             [(label(settings, "secret_url"), "manage:secret_url")],
             [(label(settings, "ddns"), "manage:ddns")],
+            [(label(settings, "geo_database"), "geo:status")],
             [(label(settings, "back"), "menu:main")],
         ]
     )
@@ -723,6 +728,40 @@ def render_edit_rule_list(settings: Settings) -> tuple[str, dict[str, Any]]:
     return text(settings, "Edit Forwarding Rule\nChoose a rule.", "编辑转发规则\n请选择规则。"), keyboard(button_rows)
 
 
+def render_geo_database(settings: Settings) -> tuple[str, dict[str, Any]]:
+    info = database_info(settings)
+    job = job_status(settings)
+    phases = {
+        "queued": ("Queued", "等待更新"), "downloading": ("Downloading", "正在下载"),
+        "building": ("Validating and building", "正在校验和构建"),
+        "refreshing": ("Refreshing saved labels", "正在更新已有记录的归属地"),
+        "uploading": ("Synchronizing relay", "正在同步到中继"),
+        "complete": ("Completed", "更新完成"),
+    }
+    phase = text(settings, *phases.get(job.get("phase"), ("Not started", "尚未更新")))
+    if job.get("status") == "failed":
+        phase = text(settings, "Failed", "更新失败") + ": " + one_line(job.get("error"))
+    source_date = info.get("source_date") or text(settings, "Unavailable", "未提供")
+    revision = info.get("revision", "")[:12] or "-"
+    relay = job.get("relay", {})
+    relay_revision = relay.get("revision", "")[:12] or "-"
+    body = text(
+        settings,
+        f"IP Database\nProvider: {info.get('provider')}\nRanges: {info.get('rows', 0):,}\n"
+        f"Source revision: {revision}\nSource date: {source_date}\n"
+        f"Last successful build: {short_time(info.get('built_at'))}\n"
+        f"Relay last synchronized revision: {relay_revision}\nUpdate: {phase}",
+        f"IP 归属地库\n数据源：{info.get('provider')}\n地址段：{info.get('rows', 0):,}\n"
+        f"源版本：{revision}\n源更新时间：{source_date}\n"
+        f"上次成功构建：{short_time(info.get('built_at'))}\n"
+        f"中继上次同步版本：{relay_revision}\n更新状态：{phase}",
+    )
+    return body, keyboard([
+        [(label(settings, "update_database"), "geo:update"), (label(settings, "refresh_now"), "geo:status")],
+        [(label(settings, "back"), "menu:manage")],
+    ])
+
+
 def render_edit_rule_detail(settings: Settings, lport: int) -> tuple[str, dict[str, Any]]:
     rule, err = rule_by_lport(settings, lport)
     if not rule:
@@ -1065,6 +1104,14 @@ def handle_callback(settings: Settings, data: str) -> tuple[str, dict[str, Any] 
 
 
 def handle_callback_for_chat(settings: Settings, chat_id: int, data: str) -> tuple[str, dict[str, Any] | None]:
+    if data in {"geo:status", "geo:update"}:
+        PENDING_ACTIONS.pop(chat_id, None)
+        if data == "geo:update":
+            try:
+                request_update(settings)
+            except Exception as exc:
+                return text(settings, f"IP database update failed: {exc}", f"IP 归属地库更新失败：{exc}"), manage_keyboard(settings)
+        return render_geo_database(settings)
     if data == "manage:rule_sets":
         PENDING_ACTIONS.pop(chat_id, None)
         return render_rule_sets_menu(settings)

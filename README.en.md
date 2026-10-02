@@ -23,7 +23,7 @@ terminal menu or an optional Telegram bot.
 - Attack mode to freeze automatic SSH/DDNS/web additions.
 - Import/export for migration and backup.
 - Password or SSH-key operation between exit and relay.
-- Local metowolf/iplist cache for geo/ISP metadata.
+- Community ip2region city/ISP database with a one-click Telegram updater and legacy cache fallback.
 - One-key installer with uninstall support.
 
 Reserved relay ports are refused: `80`, `443`, `8080`, and `8443`.
@@ -330,8 +330,26 @@ Forwarding rules remain on the relay and do not need to be recreated.
 
 ## IP Cache
 
-Populate the bundled metowolf/iplist cache before deploying to a relay without
-GitHub access:
+Telegram: **Manage > IP Database > Update Database**. The exit node downloads
+the public [ip2region dataset](https://github.com/lionsoul2014/ip2region), builds
+an indexed SQLite database, and sends it to the relay over the saved SSH pairing.
+The relay does not need GitHub access. The job runs in the background; **Refresh
+Now** shows progress, the upstream revision/date, and the last synchronized relay
+revision. Download or SSH errors appear there and can be retried with the same button.
+
+The free community dataset updates irregularly. IP-based city information is an
+estimate, especially for mobile networks and VPNs; the update date is not a claim
+of live location accuracy. ip2region is the primary country/province/city/ISP
+source; metowolf/iplist and the existing exit-side online lookup remain fallbacks.
+
+On an exit node, without Telegram:
+
+```bash
+nft.sh geo-update
+nft.sh geo-status
+```
+
+To build only the project cache before packaging for offline installation:
 
 ```bash
 python3 scripts/update_ip_cache.py
@@ -340,12 +358,21 @@ python3 scripts/update_ip_cache.py
 The cache is stored under:
 
 ```text
-cache/iplist/
+cache/iplist/geoip.db
+cache/iplist/geoip.previous.db
 ```
 
-If local cache lookup misses, the relay can use the exit node for online lookup
-when relay-to-exit SSH is reachable. Lookup failures resolve to `unknown`
-without interrupting whitelist or block handling.
+The active database is replaced atomically only after range, integrity and
+checksum validation. Its source revision, content hash and upstream license are
+stored inside it. The previous database is retained. Updating also refreshes
+the geo/ISP labels on existing whitelist and blocked records, preserving their
+timestamps, expiry, counts and access policies. Historical JSONL logs are retained.
+No firewall apply or service restart is needed for database updates.
+
+The updater is `nft-forward-geo-update.service`; it is started on demand, not a
+permanently running download loop. Core lookups use Python's standard library and
+SQLite; no additional Python package or account is needed. Cache files are ignored
+by Git and are preserved across upgrades.
 
 ## Uninstall
 

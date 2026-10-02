@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Dict, Tuple
 
 from .config import Settings
+from .geo_database import lookup_database
 from .sshutil import ssh_command
 
 GEO_LABELS = {
@@ -72,7 +73,7 @@ class GeoLookup:
                 return GeoInfo(
                     local.geo if local.geo != "unknown" else remote.geo,
                     local.isp if local.isp != "unknown" else remote.isp,
-                    "cache+exit-ssh" if (local.geo != "unknown" or local.isp != "unknown") else remote.source,
+                    f"{local.source}+exit-ssh" if (local.geo != "unknown" or local.isp != "unknown") else remote.source,
                 )
         if local.geo != "unknown" or local.isp != "unknown":
             return local
@@ -83,8 +84,10 @@ class GeoLookup:
         if addr.version != 4:
             return GeoInfo()
         value = int(addr)
-        geo = "unknown"
-        isp = "unknown"
+        community = lookup_database(self.settings, ip)
+        geo, isp = community or ("unknown", "unknown")
+        if geo != "unknown" and isp != "unknown":
+            return GeoInfo(geo, isp, "ip2region")
         index = self._load_index()
         for prefix_len in range(32, -1, -1):
             mask = 0 if prefix_len == 0 else (0xFFFFFFFF << (32 - prefix_len)) & 0xFFFFFFFF
@@ -97,7 +100,7 @@ class GeoLookup:
                 isp = match[1]
             if geo != "unknown" and isp != "unknown":
                 break
-        return GeoInfo(geo, isp, "cache") if geo != "unknown" or isp != "unknown" else GeoInfo()
+        return GeoInfo(geo, isp, "ip2region+cache" if community else "cache") if geo != "unknown" or isp != "unknown" else GeoInfo()
 
     def lookup_via_exit(self, ip: str) -> GeoInfo:
         result = ssh_command(
@@ -137,7 +140,8 @@ class GeoLookup:
         root = self.settings.paths.ip_cache if self.settings.paths else Path("cache/iplist")
         if not root.exists():
             return {}
-        files = sorted(root.rglob("*.txt"))
+        files = sorted(path for path in root.rglob("*.txt")
+                       if not any(part.startswith(".") for part in path.relative_to(root).parts))
         signature_parts: list[tuple[str, int, int]] = []
         for path in files:
             try:

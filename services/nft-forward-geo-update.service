@@ -1,0 +1,14 @@
+[Unit]
+Description=Download and synchronize NiftGate IP geolocation database
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+Environment=NFT_FORWARD_CONFIG=/etc/nft-forward-exit/config.json
+WorkingDirectory=/opt/nft-forward
+ExecStart=/usr/local/bin/nft.sh geo-update
+TimeoutStartSec=900
+Nice=10
+CPUWeight=10
+IOWeight=10

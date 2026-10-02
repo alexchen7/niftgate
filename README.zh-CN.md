@@ -264,7 +264,24 @@ nft.sh pair-exit
 
 ## IP 缓存
 
-部署到无法访问 GitHub 的中继服务器前，可先在有网络的机器上更新缓存：
+Telegram：**管理 > IP 归属地库 > 更新数据库**。出口节点下载 GitHub 上的
+[ip2region 社区数据库](https://github.com/lionsoul2014/ip2region)，构建 SQLite 索引，
+再通过已保存的 SSH 配对同步到中继。中继不需要访问 GitHub。更新在后台运行，
+点击 **立即刷新** 可查看进度、上游版本/日期及中继上次同步版本。
+下载或 SSH 失败会显示错误，可再次点击更新按钮重试。
+
+免费社区数据不定期更新。IP 城市定位是估计值，尤其移动网络和 VPN 的出口位置
+不一定等于用户所在地；数据更新日期不代表实时定位精度。优先使用 ip2region 的
+国家、省、市和运营商信息，原 metowolf/iplist 缓存及出口在线查询继续作为补充。
+
+不使用 Telegram 时，在出口节点运行：
+
+```bash
+nft.sh geo-update
+nft.sh geo-status
+```
+
+如需先构建项目内缓存，再打包到离线机器：
 
 ```bash
 python3 scripts/update_ip_cache.py
@@ -273,11 +290,18 @@ python3 scripts/update_ip_cache.py
 缓存目录：
 
 ```text
-cache/iplist/
+cache/iplist/geoip.db
+cache/iplist/geoip.previous.db
 ```
 
-如果本地缓存没有命中，中继端会尝试通过 SSH 让出口节点进行在线查询。查询失败时
-会记录为 `unknown`，不会中断白名单或拦截日志流程。
+通过地址段、完整性及校验和验证后才原子替换数据库，并保留上一份可用数据。
+源版本、内容哈希及上游许可证保存在数据库内。更新时同步刷新已有白名单和拦截
+记录的归属地/运营商标签，不改变时间、过期设置、次数或访问策略；历史 JSONL
+日志保留原样。更新数据库不需要重载防火墙或重启服务。
+
+更新服务为 `nft-forward-geo-update.service`，按需启动，不会持续循环下载。
+只使用 Python 标准库和 SQLite，不需要额外 Python 依赖或注册账号。
+缓存文件不会提交到 Git，升级时保留。
 
 ## 卸载
 

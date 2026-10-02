@@ -1,50 +1,26 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 
-import pathlib
-import urllib.request
+import json
+from pathlib import Path
+import sys
+import tempfile
 
-ROOT = pathlib.Path(__file__).resolve().parents[1]
-CACHE = ROOT / "cache" / "iplist"
-BASE = "https://raw.githubusercontent.com/metowolf/iplist/master/data"
-
-FILES = {
-    "country": ["CN", "HK", "US", "JP", "SG", "GB", "DE", "FR", "CA", "AU"],
-    "special": ["china"],
-    "cncity": ["110000", "310000", "330000", "440000", "440100", "440300"],
-    "isp": [
-        "chinatelecom",
-        "chinamobile",
-        "chinaunicom",
-        "cernet",
-        "aliyun",
-        "tencent",
-        "googlecloud",
-        "cloudflare",
-        "amazon",
-        "microsoft",
-    ],
-}
-
-
-def download(url: str, dest: pathlib.Path) -> None:
-    dest.parent.mkdir(parents=True, exist_ok=True)
-    req = urllib.request.Request(url, headers={"User-Agent": "nft-forward-cache-updater/0.2"})
-    with urllib.request.urlopen(req, timeout=20) as resp:
-        data = resp.read()
-    dest.write_bytes(data)
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+from nft_forward.config import Settings, default_paths
+from nft_forward.geo_database import build_database, database_path, fetch_source, install_database
 
 
 def main() -> int:
-    for group, names in FILES.items():
-        for name in names:
-            url = f"{BASE}/{group}/{name}.txt"
-            dest = CACHE / group / f"{name}.txt"
-            try:
-                download(url, dest)
-                print(f"ok {group}/{name}.txt")
-            except Exception as exc:
-                print(f"failed {group}/{name}.txt: {exc}")
+    settings = Settings(paths=default_paths(ROOT))
+    directory = database_path(settings).parent
+    directory.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(prefix=".geo-build-", dir=directory) as temporary:
+        source, metadata = fetch_source(Path(temporary))
+        candidate = Path(temporary) / "geoip.db"
+        build_database(source, candidate, metadata)
+        print(json.dumps(install_database(settings, candidate), ensure_ascii=False, indent=2))
     return 0
 
 
