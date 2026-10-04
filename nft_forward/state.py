@@ -127,6 +127,7 @@ class State:
               next_attempt_at INTEGER NOT NULL DEFAULT 0,
               created_at INTEGER NOT NULL
             );
+            CREATE INDEX IF NOT EXISTS blocked_history_order ON blocked_events(hidden,last_seen DESC,id DESC);
             CREATE TABLE IF NOT EXISTS secret_urls (
               id INTEGER PRIMARY KEY AUTOINCREMENT,
               label TEXT NOT NULL DEFAULT '',
@@ -550,8 +551,11 @@ class State:
         sql = "SELECT * FROM blocked_events"
         if not include_hidden:
             sql += " WHERE hidden=0"
-        sql += " ORDER BY last_seen DESC LIMIT ?"
+        sql += " ORDER BY last_seen DESC,id DESC LIMIT ?"
         return list(self.conn.execute(sql, (limit,)))
+
+    def blocked_count(self) -> int:
+        return self.conn.execute("SELECT COUNT(*) FROM blocked_events WHERE hidden=0").fetchone()[0]
 
     def hide_block(self, block_id: int) -> bool:
         cur = self.conn.execute("UPDATE blocked_events SET hidden=1 WHERE id=?", (block_id,))

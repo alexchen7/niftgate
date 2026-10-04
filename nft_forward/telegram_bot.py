@@ -908,6 +908,9 @@ def set_pending(chat_id: int, action: str, settings: Settings) -> str:
 
 
 def handle_pending(settings: Settings, chat_id: int, message_text: str) -> tuple[str, dict[str, Any]]:
+    if PENDING_ACTIONS.get(chat_id, {}).get("action", "").startswith("log_"):
+        from .telegram_log import handle_input
+        return handle_input(settings, chat_id, message_text)
     pending = PENDING_ACTIONS.pop(chat_id, None)
     if not pending:
         return handle_command(settings, message_text), main_menu_keyboard(settings)
@@ -1091,7 +1094,8 @@ def handle_callback(settings: Settings, data: str) -> tuple[str, dict[str, Any] 
     if data == "menu:manage":
         return text(settings, "Manage\nChoose an action.", "管理\n请选择操作。"), manage_keyboard(settings)
     if data == "menu:log":
-        return render_log(settings), back_keyboard("menu:main", settings)
+        from .telegram_log import log_keyboard
+        return render_log(settings), log_keyboard(settings)
     if data == "menu:attack":
         return render_attack(settings)
     if data.startswith("mode:set:"):
@@ -1104,6 +1108,9 @@ def handle_callback(settings: Settings, data: str) -> tuple[str, dict[str, Any] 
 
 
 def handle_callback_for_chat(settings: Settings, chat_id: int, data: str) -> tuple[str, dict[str, Any] | None]:
+    if data.startswith("log:") or data == "status:blocked":
+        from .telegram_log import handle_callback as handle_log_callback
+        return handle_log_callback(settings, chat_id, data)
     if data in {"geo:status", "geo:update"}:
         PENDING_ACTIONS.pop(chat_id, None)
         if data == "geo:update":
@@ -1367,6 +1374,7 @@ def handle_message(settings: Settings, chat_id: int, message_text: str) -> tuple
     if chat_id in PENDING_ACTIONS and not message_text.startswith("/"):
         return handle_pending(settings, chat_id, message_text)
     if message_text.strip().lower() in {"/start", "/help", "/menu"}:
+        PENDING_ACTIONS.pop(chat_id, None)
         return text(settings, "NiftGate menu", "NiftGate 菜单"), main_menu_keyboard(settings)
     return handle_command(settings, message_text), None
 

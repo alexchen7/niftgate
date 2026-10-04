@@ -7,7 +7,7 @@ allowed = {
     "status", "bot-status", "sync-ddns", "sync-destinations", "list", "allow-list",
     "ruleset", "mode", "ingest", "allow", "remove-allow", "blocked", "promote-block",
     "delete-block", "add-rule", "edit-rule", "delete-rule", "secret-url", "ddns",
-    "export", "import", "pair-exit", "geo-status", "geo-import",
+    "export", "import", "pair-exit", "geo-status", "geo-import", "blocked-search", "blocked-filters",
 }
 try:
     args = shlex.split(os.environ.get("SSH_ORIGINAL_COMMAND", ""))

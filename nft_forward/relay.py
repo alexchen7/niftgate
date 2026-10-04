@@ -208,7 +208,7 @@ def status(settings: Settings) -> dict[str, object]:
             "mode": state.mode(),
             "rules": len(state.rules()),
             "active_allow_entries": len(state.active_allow_entries()),
-            "blocked_visible": len(state.blocked(limit=1000)),
+            "blocked_visible": state.blocked_count(),
             "state_db": str(settings.paths.state_db if settings.paths else ""),
             "nft_conf": str(settings.paths.nft_conf if settings.paths else ""),
         }
@@ -226,7 +226,7 @@ def bot_status(settings: Settings) -> dict[str, object]:
             "allow": len(state.active_allow_entries()),
             "rules": len(state.rules()),
             "rulesets": len(rulesets),
-            "blocked": len(state.blocked(limit=1000)),
+            "blocked": state.blocked_count(),
         }
     finally:
         state.close()

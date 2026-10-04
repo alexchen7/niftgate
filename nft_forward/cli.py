@@ -14,6 +14,7 @@ from typing import Any
 
 from . import __version__
 from .blocklog import run as run_blocklog
+from . import blocked_search
 from .config import load_settings, write_example_config
 from .constants import DEFAULT_RULESET, RESERVED_PORTS
 from .destination import normalize_destination, prepare_destination, validate_port
@@ -618,6 +619,20 @@ def cmd_blocked(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_blocked_search(args: argparse.Namespace) -> int:
+    settings = load_settings(args.config)
+    if not 1 <= args.page <= 1_000_000:
+        raise ValueError("page number must be a positive integer")
+    if args.token:
+        token = args.token
+    else:
+        if len(args.query or "{}") > 4096:
+            raise ValueError("search query is too long")
+        token = blocked_search.snapshot(settings, json.loads(args.query or "{}"))
+    print_json(blocked_search.page(settings, token, args.page))
+    return 0
+
+
 def cmd_delete_block(args: argparse.Namespace) -> int:
     settings = load_settings(args.config)
     state = state_for(settings)
@@ -1116,6 +1131,15 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--limit", type=int, default=50)
     p.add_argument("--all", action="store_true")
     p.set_defaults(func=cmd_blocked)
+
+    p = sub.add_parser("blocked-search", help="paged blocked history with AND/OR filters")
+    search = p.add_mutually_exclusive_group()
+    search.add_argument("--query", help="JSON filters: ports, countries, sources, protocol, since/until or window, operator")
+    search.add_argument("--token", help="continue an existing search snapshot")
+    p.add_argument("--page", type=int, default=1)
+    p.set_defaults(func=cmd_blocked_search)
+    p = sub.add_parser("blocked-filters", help="list ports and countries in visible blocked history")
+    p.set_defaults(func=lambda args: print_json(blocked_search.facets(load_settings(args.config))) or 0)
 
     p = sub.add_parser("delete-block")
     p.add_argument("id")

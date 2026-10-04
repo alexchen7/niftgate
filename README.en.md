@@ -328,6 +328,47 @@ nft.sh apply
 
 Forwarding rules remain on the relay and do not need to be recreated.
 
+## Blocked History And Search
+
+Telegram: **Log > Blocked History**. Records are shown five per page with
+Previous/Next, First/Last, and a clickable page number for jumping to a page.
+**Status > Blocked IPs** opens the same paginated view and shows the full count.
+
+**Log > Advanced Search** supports multiple ports, source countries, source
+IPs/CIDRs/ranges, TCP/UDP, and a last-blocked time range. Select values with buttons
+or enter comma-separated values. **AND** requires every selected filter field;
+**OR** accepts any selected field. Multiple values inside a field are OR'd.
+For example, ports `1935,24678`, countries `CN,US`, a 24-hour window, and **AND**
+match `(port 1935 OR 24678) AND (China OR United States) AND last 24 hours`.
+
+Time presets cover 1/6/24 hours and 7/30 days. Custom durations accept `90m`, `2h`,
+or `3d`. Custom dates/times are UTC unless an explicit offset is supplied, such as
+`2026-10-01T17:00:00+08:00`. A date-only end bound includes the entire UTC day.
+Country matching uses the stored geolocation country, including name/code aliases
+for common countries; the picker lists the countries actually present in history.
+
+Records aggregate one source IP + protocol + listening port. The time filter
+uses **last_seen**, and each record's count is its **lifetime total**, not the
+number of packets within the selected window. This does not reconstruct individual
+historical packets. Hidden/deleted history is excluded from new searches.
+
+Each result set is a fixed snapshot, so incoming traffic cannot shuffle pages.
+**Refresh** takes a new snapshot (and updates relative time windows). Snapshots
+expire after 30 minutes; the cache keeps at most eight, with a 32 MiB/100,000-record
+limit per search. Larger searches ask for narrower filters instead of silently
+truncating results. Existing snapshots retain the data as it was when queried.
+Searching never changes forwarding rules, allowlists, counters, or hidden flags.
+
+CLI examples on the relay:
+
+```bash
+nft.sh blocked-search --query '{"ports":[1935,24678],"countries":["CN"],"window":86400,"operator":"AND"}'
+nft.sh blocked-search --token TOKEN_FROM_PREVIOUS_RESULT --page 2
+nft.sh blocked-filters
+```
+
+The existing `nft.sh blocked --limit 20` command retains its JSON-array output.
+
 ## IP Cache
 
 Telegram: **Manage > IP Database > Update Database**. The exit node downloads
