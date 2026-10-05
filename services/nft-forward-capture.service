@@ -1,0 +1,24 @@
+[Unit]
+Description=NiftGate optional packet recording (idle until enabled)
+After=network-online.target nftables.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+Environment=NFT_FORWARD_CONFIG=/etc/nft-forward/config.json
+WorkingDirectory=/opt/nft-forward
+ExecStart=/usr/local/bin/nft.sh run-capture
+Restart=always
+RestartSec=10
+TimeoutStopSec=10
+UMask=0077
+Nice=10
+CPUQuota=25%
+MemoryMax=256M
+NoNewPrivileges=true
+ProtectHome=true
+PrivateTmp=true
+ProtectSystem=full
+
+[Install]
+WantedBy=multi-user.target

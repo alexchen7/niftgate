@@ -30,3 +30,6 @@ nft-forward-iplist-cache.tgz
 
 tests/live_*.ps1
 tests/production_setup_*.ps1
+*.pcap
+*.pcapng
+captures/

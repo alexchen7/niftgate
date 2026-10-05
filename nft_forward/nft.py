@@ -8,6 +8,7 @@ import tempfile
 from pathlib import Path
 
 from .config import Settings
+from .capture_config import NFLOG_GROUP, get_config as capture_config
 from .constants import LEGACY_TABLE_NAMES, LOG_PREFIX, TABLE_NAME
 from .iputil import collapse_sources_for_nft
 from .state import State
@@ -26,6 +27,8 @@ def render_nft(settings: Settings, state: State) -> str:
         f"table ip {TABLE_NAME} {{",
     ]
     rules = state.rules()
+    capture = capture_config(state)
+    capture_ports = set(capture["ports"]) if capture["enabled"] else set()
     effective: dict[int, list[str]] = {}
     for rule in rules:
         sources = collapse_sources_for_nft(state.effective_sources_for_rule(rule))
@@ -39,6 +42,23 @@ def render_nft(settings: Settings, state: State) -> str:
                 "    }",
                 "",
             ]
+    if capture_ports:
+        prefix = "NGCAP:B" if capture["scope"] == "blocked" else "NGCAP:A"
+        lines += [
+            "    counter capture_seen { }",
+            "    counter capture_sent { }",
+            "    chain packet_capture {",
+            "        counter name capture_seen",
+            f'        limit rate {capture["rate_pps"]}/second burst {capture["rate_pps"]} packets counter name capture_sent log prefix "{prefix}" group {NFLOG_GROUP} snaplen 65535 queue-threshold 1',
+            "    }", "",
+        ]
+        if capture["scope"] == "all":
+            ports = ", ".join(str(port) for port in sorted(capture_ports))
+            lines += ["    chain capture_ingress {",
+                      "        type filter hook prerouting priority -110; policy accept;",
+                      f"        fib daddr type local tcp dport {{ {ports} }} jump packet_capture",
+                      f"        fib daddr type local udp dport {{ {ports} }} jump packet_capture",
+                      "    }", ""]
     guarded = [r for r in rules if not r.open_access]
     if guarded:
         lines += [
@@ -47,6 +67,10 @@ def render_nft(settings: Settings, state: State) -> str:
         for rule in guarded:
             sources = effective[rule.lport]
             prefix = f"{LOG_PREFIX}port={rule.lport} "
+            if rule.lport in capture_ports and capture["scope"] == "blocked":
+                match = f"ip saddr != @{_nft_set_name(rule.lport)} " if sources else ""
+                lines += [f"        {match}tcp dport {rule.lport} jump packet_capture",
+                          f"        {match}udp dport {rule.lport} jump packet_capture"]
             if sources:
                 set_name = _nft_set_name(rule.lport)
                 lines += [

@@ -763,6 +763,7 @@ def cmd_import(args: argparse.Namespace) -> int:
     state = state_for(settings)
     try:
         if args.replace:
+            state.conn.execute("DELETE FROM capture_ports")
             state.conn.execute("DELETE FROM forward_rules")
             state.conn.execute("DELETE FROM rulesets WHERE name != ?", (DEFAULT_RULESET,))
             state.conn.execute("DELETE FROM secret_urls")
@@ -915,6 +916,83 @@ def cmd_sync_from_relay(args: argparse.Namespace) -> int:
     return 0 if ok else 1
 
 
+def cmd_capture(args: argparse.Namespace) -> int:
+    from . import capture, capture_store
+    settings = load_settings(args.config)
+    if settings.role != "relay":
+        from .exitnode import relay_args
+        command = ["capture", args.capture_action]
+        if args.capture_action == "set":
+            command += ["--json", args.json]
+        elif args.capture_action == "files":
+            command += ["--page", str(args.page)]
+        elif args.capture_action == "records":
+            command += [args.file_id, "--page", str(args.page)]
+            if args.anchor is not None:
+                command += ["--anchor", str(args.anchor)]
+        ok, out = relay_args(settings, command)
+        if not ok:
+            raise ValueError(out)
+        print(out)
+        return 0
+    if args.capture_action == "status":
+        result = capture.status(settings)
+    elif args.capture_action == "set":
+        if len(args.json) > 32768:
+            raise ValueError("recording settings too long")
+        result = capture.configure(settings, json.loads(args.json))
+    elif args.capture_action == "files":
+        result = capture_store.files(settings, args.page)
+    else:
+        result = capture_store.records(settings, args.file_id, args.page, args.anchor)
+    print_json(result)
+    return 0
+
+
+def capture_menu(args, settings):
+    def tr(en, zh):
+        return zh if settings.language == "zh" else en
+    while True:
+        args.capture_action = "status"
+        cmd_capture(args)
+        print(tr("1) ON/OFF  2) Ports  3) Scope  4) Countries  5) Limits  6) Records  0) Back",
+                 "1) 开关  2) 端口  3) 范围  4) 国家  5) 限额  6) 记录  0) 返回"))
+        choice = input("> ").strip()
+        try:
+            if choice in {"", "0"}:
+                return
+            patch = {}
+            if choice == "1":
+                answer = input(tr("ON/OFF: ", "开关 [on/off]: ")).strip().lower()
+                if answer not in {"on", "off"}:
+                    raise ValueError("use on/off")
+                patch = {"enabled": answer == "on"}
+            elif choice == "2":
+                patch = {"ports": [int(x) for x in input(tr("Forwarding ports, comma separated (blank = none): ", "转发端口，逗号分隔（留空 = 不记录）：")).replace(",", " ").split()]}
+            elif choice == "3":
+                patch = {"scope": input(tr("Scope [blocked/all]: ", "范围 [blocked=仅拦截 / all=全部入站]: ")).strip()}
+            elif choice == "4":
+                patch = {"countries": [x.strip() for x in input(tr("Countries, comma separated; blank = all: ", "国家名称/代码，逗号分隔；留空 = 全部：")).split(",") if x.strip()]}
+            elif choice == "5":
+                mb, days, pps = map(int, input(tr("disk_MiB days packets_per_second [256 7 500]: ", "磁盘_MiB 天数 每秒包数 [256 7 500]: ")).split())
+                patch = {"max_disk_mb": mb, "retention_days": days, "rate_pps": pps}
+            elif choice == "6":
+                args.capture_action, args.page = "files", 1
+                cmd_capture(args)
+                file_id = input(tr("File ID to inspect (blank = back): ", "查看的文件 ID（留空返回）：")).strip()
+                if file_id:
+                    args.capture_action, args.file_id, args.anchor = "records", file_id, None
+                    args.page = int(input(tr("Page [1]: ", "页码 [1]: ")) or "1")
+                    cmd_capture(args)
+                continue
+            else:
+                continue
+            args.capture_action, args.json = "set", json.dumps(patch)
+            cmd_capture(args)
+        except (ValueError, RuntimeError) as exc:
+            print(str(exc))
+
+
 def cmd_menu(args: argparse.Namespace) -> int:
     settings = load_settings(args.config)
 
@@ -929,7 +1007,8 @@ def cmd_menu(args: argparse.Namespace) -> int:
         print(tr("4) Attack mode", "4) 攻击模式"))
         print(tr("5) Export", "5) 导出"))
         print(tr("6) Exit", "6) 退出"))
-        choice = input(tr("Choose [1-6]: ", "请选择 [1-6]: ")).strip()
+        print(tr("7) Settings: Packet Recording", "7) 设置：数据包记录"))
+        choice = input(tr("Choose [1-7]: ", "请选择 [1-7]: ")).strip()
         if choice == "1":
             cmd_status(args)
         elif choice == "2":
@@ -960,6 +1039,8 @@ def cmd_menu(args: argparse.Namespace) -> int:
             print(json.dumps(export_payload(settings, include_secrets=False), ensure_ascii=False, indent=2))
         elif choice == "6" or choice == "":
             return 0
+        elif choice == "7":
+            capture_menu(args, settings)
     return 0
 
 
@@ -1218,6 +1299,22 @@ def build_parser() -> argparse.ArgumentParser:
 
     p = sub.add_parser("menu")
     p.set_defaults(func=cmd_menu)
+
+    p = sub.add_parser("capture", help="optional relay packet recording and metadata")
+    capture_sub = p.add_subparsers(dest="capture_action", required=True)
+    for action in ("status", "set", "files", "records"):
+        child = capture_sub.add_parser(action)
+        child.set_defaults(func=cmd_capture)
+        if action == "set":
+            child.add_argument("--json", required=True, help="partial settings JSON")
+        if action in {"files", "records"}:
+            child.add_argument("--page", type=int, default=1)
+        if action == "records":
+            child.add_argument("file_id")
+            child.add_argument("--anchor", type=int)
+    p = sub.add_parser("run-capture")
+    from .capture import run as run_capture
+    p.set_defaults(func=lambda _args: run_capture() or 0)
 
     p = sub.add_parser("run-blocklog")
     p.set_defaults(func=lambda _args: run_blocklog() or 0)

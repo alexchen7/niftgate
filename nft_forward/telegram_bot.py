@@ -188,6 +188,7 @@ def manage_keyboard(settings: Settings | None = None) -> dict[str, Any]:
             [(label(settings, "secret_url"), "manage:secret_url")],
             [(label(settings, "ddns"), "manage:ddns")],
             [(label(settings, "geo_database"), "geo:status")],
+            [(text(settings, "Settings", "设置"), "manage:settings")],
             [(label(settings, "back"), "menu:main")],
         ]
     )
@@ -908,6 +909,9 @@ def set_pending(chat_id: int, action: str, settings: Settings) -> str:
 
 
 def handle_pending(settings: Settings, chat_id: int, message_text: str) -> tuple[str, dict[str, Any]]:
+    if PENDING_ACTIONS.get(chat_id, {}).get("action", "").startswith("capture_"):
+        from .telegram_capture import handle_input
+        return handle_input(settings, chat_id, message_text)
     if PENDING_ACTIONS.get(chat_id, {}).get("action", "").startswith("log_"):
         from .telegram_log import handle_input
         return handle_input(settings, chat_id, message_text)
@@ -1108,6 +1112,9 @@ def handle_callback(settings: Settings, data: str) -> tuple[str, dict[str, Any] 
 
 
 def handle_callback_for_chat(settings: Settings, chat_id: int, data: str) -> tuple[str, dict[str, Any] | None]:
+    if data.startswith("cap:") or data == "manage:settings":
+        from .telegram_capture import handle_callback as handle_capture_callback
+        return handle_capture_callback(settings, chat_id, data)
     if data.startswith("log:") or data == "status:blocked":
         from .telegram_log import handle_callback as handle_log_callback
         return handle_log_callback(settings, chat_id, data)

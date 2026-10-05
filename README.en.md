@@ -24,6 +24,7 @@ terminal menu or an optional Telegram bot.
 - Import/export for migration and backup.
 - Password or SSH-key operation between exit and relay.
 - Community ip2region city/ISP database with a one-click Telegram updater and legacy cache fallback.
+- Optional per-port packet recording with country filters and metadata-only Telegram browsing.
 - One-key installer with uninstall support.
 
 Reserved relay ports are refused: `80`, `443`, `8080`, and `8443`.
@@ -414,6 +415,64 @@ The updater is `nft-forward-geo-update.service`; it is started on demand, not a
 permanently running download loop. Core lookups use Python's standard library and
 SQLite; no additional Python package or account is needed. Cache files are ignored
 by Git and are preserved across upgrades.
+
+## Packet Recording
+
+Recording is **off by default**, with no ports selected. In Telegram, open
+**Manage > Settings > Packet Recording**, select forwarding ports, and turn it on.
+The default scope is **Blocked only** (copies from NiftGate's actual drop path).
+You can switch to **All incoming** to record TCP/UDP traffic arriving at selected
+relay ports, including permitted traffic and established connections. Selecting a
+port does not open it or change its whitelist. Port edits carry the selection with
+the rule; deleting the rule removes its capture selection.
+
+Choose multiple countries with OR matching, such as CN, GB and AU. An empty list
+means all countries. Filtering uses the relay's local IP database, never an online
+lookup per packet. Unknown locations are excluded by a country filter unless
+Unknown is selected. Geolocation is approximate and may be out of date.
+
+**Log > Recorded Packets** lists rotating capture files. Select a file and browse
+packet timestamps (UTC), addresses, ports, protocol/flags, sizes, location/ISP,
+PCAP offsets and truncation status. Payloads are never sent to Telegram. Raw IPv4
+PCAP files and their metadata indexes stay in the relay's
+`/var/lib/nft-forward/captures/` (or `captures/` beside a custom state database),
+with directory permissions `0700` and file permissions `0600`.
+
+The terminal menu (`nft.sh menu`, option 7) and CLI provide the same settings;
+on an exit node, capture commands proxy to the paired relay:
+
+```bash
+nft.sh capture status
+nft.sh capture set --json '{"ports":[1935],"scope":"blocked","countries":["CN","GB","AU"]}'
+nft.sh capture set --json '{"enabled":true}'
+nft.sh capture files
+nft.sh capture records <file-id> --page 1
+nft.sh capture set --json '{"enabled":false}'
+```
+
+The relay installer adds `tcpdump` and `nft-forward-capture.service`. The collector
+is idle until enabled with selected ports. Default limits are **256 MiB total
+PCAP/index storage, 7 days, and 500 packet copies/second**. Older segments are
+deleted automatically; low disk space skips recording instead of disrupting
+forwarding. Limits are configurable in Telegram/terminal. The service has a 25%
+CPU quota and a 256 MiB memory limit. NFLOG group `61440` is reserved for NiftGate.
+Do not run another NFLOG collector on that group.
+
+Recording is best effort: rate limiting, kernel queue overflow, resource limits,
+or collector outages can lose copies. It does not accept blocked connections to
+solicit payloads: a blocked TCP SYN often has no application payload. Only IPv4
+TCP/UDP with decodable headers is indexed. Capture files may contain sensitive
+traffic; keep them private. Upgrades preserve settings/files; export/import does
+not include captures or enable recording on newly imported rules. Uninstallation
+stops recording; removing state also deletes stored captures.
+
+### Exclude Whitelisted Sources
+
+In **Log > Advanced Search**, turn on **Exclude Whitelisted**. This excludes IPs
+covered by any currently active public or custom whitelist entry, including
+CIDRs/ranges. Expired entries do not exclude an IP. The exclusion applies even
+when other filters use OR. Existing search pages retain their snapshot; Refresh
+re-evaluates the current whitelist. No firewall rules or blocked records change.
 
 ## Uninstall
 

@@ -78,6 +78,34 @@ class BlockedSearchTests(unittest.TestCase):
         self.assertEqual(self.ids({**query, "operator": "OR"}), {1, 2, 3, 6})
         self.assertEqual(self.ids({"ports": [1935, 24678], "countries": ["中国", "US"], "protocol": "TCP"}), {1, 2, 3})
 
+    def test_exclude_whitelisted_union_expiry_or_and_snapshot(self):
+        for _ in range(6):
+            self.add()
+        state = State(self.settings.paths.state_db)
+        state.add_allow("public", "192.0.2.0/30", "manual", 30)
+        state.ensure_ruleset("custom")
+        state.add_allow("custom", "192.0.2.4-192.0.2.4", "manual", None)
+        state.add_allow("custom", "192.0.2.5/32", "manual", 32)
+        state.conn.execute("UPDATE allow_entries SET expires_at=1 WHERE source='192.0.2.5/32'")
+        state.conn.commit()
+        query = {"exclude_whitelisted": True, "operator": "OR", "ports": [1935], "countries": ["GB"]}
+        self.assertEqual(self.ids(query), {5, 6})
+        token = search.snapshot(self.settings, query)
+        state.add_allow("public", "192.0.2.6/32", "manual", 32)
+        state.close()
+        self.assertEqual({r['id'] for r in search.page(self.settings, token)['rows']}, {5, 6})
+        self.assertEqual(self.ids(query), {5})
+        with self.assertRaises(ValueError):
+            search.normalize_query({"exclude_whitelisted": "false"})
+
+    def test_whitelist_exclusion_toggle(self):
+        token = ui.new_draft(1)
+        body, keys = ui.handle_callback(self.settings, 1, f"log:trusted:{token}")
+        self.assertTrue(ui.DRAFTS[token]["filters"]["exclude_whitelisted"])
+        self.assertIn("排除", body)
+        ui.handle_callback(self.settings, 1, f"log:trusted:{token}")
+        self.assertFalse(ui.DRAFTS[token]["filters"]["exclude_whitelisted"])
+
     def test_source_ranges_and_boundaries(self):
         for _ in range(4):
             self.add()

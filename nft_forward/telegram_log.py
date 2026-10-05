@@ -27,6 +27,7 @@ def log_keyboard(settings):
     return bot.keyboard([
         [(tr(settings, "Blocked History", "拦截记录（分页）"), "log:browse"),
          (tr(settings, "Advanced Search", "高级搜索"), "log:search")],
+        [(tr(settings, "Recorded Packets", "数据包记录"), "cap:files:1")],
         [(bot.label(settings, "back"), "menu:main")],
     ])
 
@@ -74,7 +75,10 @@ def summary(settings, query):
         start = timestamp(query["since"]) if "since" in query else "-"
         end = timestamp(query["until"]) if "until" in query else "-"
         items.append(tr(settings, f"[Last blocked: {start} .. {end}]", f"[最近拦截: {start} 至 {end}]"))
-    return (f" {query.get('operator', 'AND')} ".join(items)) or tr(settings, "All visible records", "全部可见记录")
+    body = (f" {query.get('operator', 'AND')} ".join(items)) or tr(settings, "All visible records", "全部可见记录")
+    if query.get("exclude_whitelisted"):
+        body += tr(settings, "\nExclude IPs in any currently active whitelist.", "\n排除任一当前有效规则集中的白名单 IP。")
+    return body
 
 
 def render_form(settings, chat, token):
@@ -89,6 +93,8 @@ def render_form(settings, chat, token):
         + [(tr(settings, "Any protocol", "全部协议"), f"log:proto:{token}:all")],
         [(f"{'[x]' if mode == 'AND' else '[ ]'} AND", f"log:op:{token}:AND"),
          (f"{'[x]' if mode == 'OR' else '[ ]'} OR", f"log:op:{token}:OR")],
+        [(tr(settings, f"Exclude Whitelisted: {'ON' if query.get('exclude_whitelisted') else 'OFF'}",
+             f"排除白名单：{'开' if query.get('exclude_whitelisted') else '关'}"), f"log:trusted:{token}")],
         [(tr(settings, "Search", "搜索"), f"log:run:{token}"), (tr(settings, "Reset Filters", "重置条件"), f"log:clear:{token}:all")],
         [(bot.label(settings, "back"), "menu:log")],
     ])
@@ -263,6 +269,8 @@ def handle_callback(settings, chat, data):
         if action == "op":
             normalize_query({**query, "operator": parts[3]})
             query["operator"] = parts[3]
+        elif action == "trusted":
+            query["exclude_whitelisted"] = not query.get("exclude_whitelisted", False)
         elif action == "proto":
             updated = dict(query)
             clear_field(updated, "protocol")

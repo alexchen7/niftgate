@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import contextlib
+import bisect
 from datetime import datetime, timezone
 import ipaddress
 import json
@@ -95,13 +96,18 @@ def source_bounds(value: str) -> tuple[int, int]:
 
 def normalize_query(query: dict | None, now: int | None = None) -> dict:
     query = {} if query is None else query
-    allowed = {"operator", "ports", "countries", "sources", "protocol", "since", "until", "window"}
+    allowed = {"operator", "ports", "countries", "sources", "protocol", "since", "until", "window", "exclude_whitelisted"}
     if not isinstance(query, dict) or set(query) - allowed:
         raise ValueError("invalid blocked-search fields")
     operator = query.get("operator", "AND")
     if not isinstance(operator, str) or operator not in {"AND", "OR"}:
         raise ValueError("operator must be AND or OR")
     result = {"operator": operator}
+    if "exclude_whitelisted" in query:
+        if type(query["exclude_whitelisted"]) is not bool:
+            raise ValueError("exclude_whitelisted must be true or false")
+        if query["exclude_whitelisted"]:
+            result["exclude_whitelisted"] = True
     for field in ("ports", "countries", "sources"):
         values = query.get(field, [])
         if not isinstance(values, list) or len(values) > 16:
@@ -169,7 +175,34 @@ def compile_query(query: dict) -> tuple[str, list]:
         clauses.append("(" + " AND ".join(times) + ")")
     condition = f" {query['operator']} ".join(clauses) or "1"
     # Hidden records are excluded outside the OR expression as well.
-    return "hidden=0 AND (" + condition + ")", params
+    exclusion = " AND NOT currently_whitelisted(source_ip)" if query.get("exclude_whitelisted") else ""
+    return "hidden=0" + exclusion + " AND (" + condition + ")", params
+
+
+def whitelist_checker(conn, now=None):
+    """Freeze the union of active public/custom allow entries for this query."""
+    now = int(time.time()) if now is None else now
+    intervals = []
+    for row in conn.execute("SELECT source FROM allow_entries WHERE expires_at IS NULL OR expires_at>?", (now,)):
+        try:
+            intervals.append(source_bounds(row[0]))
+        except ValueError:
+            continue
+    merged = []
+    for start, end in sorted(intervals):
+        if merged and start <= merged[-1][1] + 1:
+            merged[-1] = (merged[-1][0], max(end, merged[-1][1]))
+        else:
+            merged.append((start, end))
+    starts = [row[0] for row in merged]
+    def check(address):
+        try:
+            value = int(ipaddress.IPv4Address(address))
+        except ValueError:
+            return False
+        index = bisect.bisect_right(starts, value) - 1
+        return index >= 0 and value <= merged[index][1]
+    return check
 
 
 @contextlib.contextmanager
@@ -241,6 +274,9 @@ def snapshot(settings, raw_query: dict | None = None) -> str:
             count = 0
             started = time.monotonic()
             with history_connection(settings) as conn:
+                conn.execute("BEGIN")
+                if query.get("exclude_whitelisted"):
+                    conn.create_function("currently_whitelisted", 1, whitelist_checker(conn))
                 cursor = conn.execute(
                     "SELECT id,source_ip,proto,lport,geo,isp,first_seen,last_seen,count FROM blocked_events WHERE "
                     + where + " ORDER BY last_seen DESC,id DESC LIMIT ?", (*params, MAX_ROWS + 1))

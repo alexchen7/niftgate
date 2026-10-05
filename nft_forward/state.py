@@ -128,6 +128,9 @@ class State:
               created_at INTEGER NOT NULL
             );
             CREATE INDEX IF NOT EXISTS blocked_history_order ON blocked_events(hidden,last_seen DESC,id DESC);
+            CREATE TABLE IF NOT EXISTS capture_ports (
+              rule_id INTEGER PRIMARY KEY
+            );
             CREATE TABLE IF NOT EXISTS secret_urls (
               id INTEGER PRIMARY KEY AUTOINCREMENT,
               label TEXT NOT NULL DEFAULT '',
@@ -335,6 +338,7 @@ class State:
             raise ValueError("forwarding rule was removed; refresh the rule list")
 
     def delete_rule(self, lport: int) -> bool:
+        self.conn.execute("DELETE FROM capture_ports WHERE rule_id IN (SELECT id FROM forward_rules WHERE lport=?)", (lport,))
         cur = self.conn.execute("DELETE FROM forward_rules WHERE lport=?", (lport,))
         self.conn.commit()
         deleted = cur.rowcount > 0

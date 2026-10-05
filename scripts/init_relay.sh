@@ -24,7 +24,7 @@ fi
 
 install_relay_packages() {
     local need_pkg=()
-    for cmd in python3 nft ssh systemctl sysctl; do
+    for cmd in python3 nft ssh systemctl sysctl tcpdump; do
         command -v "${cmd}" >/dev/null 2>&1 || need_pkg+=("${cmd}")
     done
     if ((${#need_pkg[@]} == 0)); then
@@ -36,13 +36,13 @@ install_relay_packages() {
         DEBIAN_FRONTEND=noninteractive apt-get install -y \
             -o Dpkg::Options::=--force-confdef \
             -o Dpkg::Options::=--force-confold \
-            python3 nftables openssh-client systemd procps
+            python3 nftables openssh-client systemd procps tcpdump
     elif command -v dnf >/dev/null 2>&1; then
-        dnf install -y python3 nftables openssh-clients systemd procps-ng
+        dnf install -y python3 nftables openssh-clients systemd procps-ng tcpdump
     elif command -v yum >/dev/null 2>&1; then
-        yum install -y python3 nftables openssh-clients systemd procps-ng
+        yum install -y python3 nftables openssh-clients systemd procps-ng tcpdump
     elif command -v pacman >/dev/null 2>&1; then
-        pacman -Sy --noconfirm python nftables openssh systemd procps-ng
+        pacman -Sy --noconfirm python nftables openssh systemd procps-ng tcpdump
     else
         echo "Missing required commands: ${need_pkg[*]}" >&2
         echo "Install Python 3, nftables, OpenSSH client, systemd, and procps/sysctl, then rerun this script." >&2
@@ -114,12 +114,15 @@ fi
 NFT_FORWARD_CONFIG="${CONFIG_DIR}/config.json" /usr/local/bin/nft.sh apply --no-apply || true
 
 install -m 0644 "${INSTALL_DIR}/services/nft-forward-blocklog.service" /etc/systemd/system/
+install -m 0644 "${INSTALL_DIR}/services/nft-forward-capture.service" /etc/systemd/system/
 install -m 0644 "${INSTALL_DIR}/services/nft-forward-sshlog.service" /etc/systemd/system/
 install -m 0644 "${INSTALL_DIR}/services/nft-forward-ddns.service" /etc/systemd/system/
 install -m 0644 "${INSTALL_DIR}/services/nft-forward-ddns.timer" /etc/systemd/system/
 install -m 0644 "${INSTALL_DIR}/services/nft-forward-destinations.service" /etc/systemd/system/
 install -m 0644 "${INSTALL_DIR}/services/nft-forward-destinations.timer" /etc/systemd/system/
 systemctl daemon-reload
+systemctl enable --now nft-forward-capture.service
+systemctl try-restart nft-forward-capture.service
 systemctl enable --now nft-forward-blocklog.service || true
 systemctl enable --now nft-forward-sshlog.service || true
 systemctl enable --now nft-forward-ddns.timer || true
